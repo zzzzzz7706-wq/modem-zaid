@@ -138,24 +138,21 @@ jobs:
       - name: Build Ultra-Slim Split-ABI Release APKs
         run: |
           flutter build apk --release --split-per-abi --tree-shake-icons --obfuscate --split-debug-info=/tmp/symbols
-          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ModemZaid-arm64-v1.3.0.apk
-          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ModemZaid-arm32-v1.3.0.apk
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ModemZaid-arm64-v1.4.0.apk
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ModemZaid-arm32-v1.4.0.apk
           ls -lh ModemZaid-arm*.apk
 
       - name: Publish Slim APKs to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.3.0
-          name: "مودم زيد v1.3.0 — فحص دقيق لكل المودمات وبيانات حقيقية فقط"
+          tag_name: v1.4.0
+          name: "مودم زيد v1.4.0 — دعم كامل لمودم المؤسسة (Yemen 4G CPE) ومودم Star Speed 4G"
           body: |
-            إصدار **مودم زيد v1.3.0 (Modem Zaid)**:
-            - فحص دقيق: قراءة عنوان المودم الحقيقي (البوابة) من إعدادات الواي فاي في أندرويد، وربط التطبيق كاملاً بالواي فاي حتى مع تشغيل بيانات الهاتف.
-            - دعم أفضل لمودمات المؤسسة العامة للاتصالات والراوترات البطيئة (مهلة أطول، تتبع التحويلات، التعرف حتى بدون صفحة رئيسية).
-            - التعرف التلقائي على اسم الشركة والطراز لأي مودم (Huawei / ZTE / TP-Link / Tenda / D-Link / Alcatel / Olax / ZLT ...).
-            - دعم المودمات التي تطلب كلمة المرور فقط (مثل ZTE و Olax و Speed 4G) بإخفاء حقل اسم المستخدم تلقائياً.
-            - حذف وضع المحاكاة (الديمو) نهائياً — كل البيانات حقيقية من المودم.
-            - رقم المودم يُعرض من المودم الحالي فقط، ولا يظهر رقم مودم سابق.
+            إصدار **مودم زيد v1.4.0 (Modem Zaid)**:
+            - إضافة محول أصيل ومخصص لمودم **المؤسسة العامة للاتصالات (`4G YEMEN — 4G CPE` / `192.168.0.1` بنظام `Marvell UAPXC`)** بعد استخراج بروتوكول `PostXml` والمصادقة الدقيقة من الجهاز الفعلي (الإشارة، الأجهزة المتصلة والسابقة، حظر `MAC`، الواي فاي، تثبيت الترددات، تحديد السرعة، الرسائل).
+            - دعم كامل لمودمات **Star Speed 4G / ZTE ZXIC 2025 (`192.168.0.1`)** التي تطلب كلمة المرور فقط (فحص `LD` و `RD` وحساب `AD` بتشفير `SHA-256` حتى عند إخفاء بيانات الطراز قبل الدخول، مع فحص `/tmpl/login.html`).
+            - ربط أصيل بواجهة الواي فاي في أندرويد وحذف وضع المحاكاة نهائياً وعرض رقم المودم المتصل حالياً فقط.
           files: |
-            ModemZaid-arm64-v1.3.0.apk
-            ModemZaid-arm32-v1.3.0.apk
+            ModemZaid-arm64-v1.4.0.apk
+            ModemZaid-arm32-v1.4.0.apk
           make_latest: true

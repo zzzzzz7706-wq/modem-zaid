@@ -2,13 +2,13 @@
 
 تطبيق أندرويد أصيل مبني بـ **Flutter** يتعرف تلقائياً وبدقة على أي مودم أو راوتر متصل بالهاتف عبر الواي فاي (مع ربط كامل للعملية بشبكة الواي فاي عبر `ConnectivityManager` في أندرويد حتى عند تفعيل بيانات الهاتف الخلوية في نفس الوقت)، ويقوم بترجمة واجهاته ومميزاته وبروتوكولاته برمجياً إلى واجهة عربية موحدة وحقيقية 100%.
 
-## أبرز المميزات المحدثة (v1.3.0)
-- **فحص دقيق وشامل لمودمات المؤسسة العامة للاتصالات وسبيد فورجي وكافة الشركات**:
+## أبرز المميزات المحدثة (v1.4.0)
+- **دعم أصيل ومفحوص لمودم المؤسسة العامة للاتصالات (`Yemen 4G CPE` / `Marvell UAPXC`) ومودم `Star Speed 4G` (`ZTE ZXIC 2025`)**:
   - قراءة عنوان البوابة الحقيقي (`DHCP Gateway`) مباشرة من نظام أندرويد وربط جميع الاتصالات بواجهة الواي فاي، مع دعم التوجيه التلقائي والمهل الممتدة ومنفذي `HTTPS (443)` و `8080`.
-  - دعم بروتوكولات `Notion/ASR MiFi`، و`Huawei/Brovi HiLink` (`/api/webserver/SesTokInfo` & `/token`)، و`ZTE/Olax/ZLT/Speed 4G` (`/goform/...` & `/reqproc/...` شاملاً تشفير `LD`)، و`Alcatel/TCL` (`/jrd/webapi`)، والمترجم الذكي الشامل (`Basic`/`Digest`/`Form`).
+  - دعم بروتوكولات `Marvell UAPXC RPC` (`PostXml` لمودم المؤسسة `4G CPE` على `192.168.0.1`)، و`Notion/ASR MiFi` (`L818A`)، و`ZTE/ZXIC/Star Speed 4G/Olax/ZLT` (`/goform/...` & `/reqproc/...` شاملاً تشفير `LD` و `AD` بـ `SHA-256`)، و`Huawei/Brovi HiLink`، و`Alcatel/TCL` (`/jrd/webapi`)، والمترجم الذكي الشامل.
 - **التعرف الذكي على الشركة المصنعة وطراز المودم وطريقة الدخول**:
   - استخراج اسم الشركة والطراز الحقيقي عبر `UPnP SSDP`، وواجهات تعريف الجهاز، وتحليل بادئات الطرازات والصفحات لأكثر من 35 شركة مصنعة.
-  - كشف تلقائي للمودمات التي تطلب **كلمة المرور فقط** (مثل مودمات `Speed 4G` و`ZTE` و`Olax` و`Huawei HiLink` و`Alcatel`) وإخفاء حقل اسم المستخدم تلقائياً.
+  - كشف تلقائي للمودمات التي تطلب **كلمة المرور فقط** (مثل مودمات `Star Speed 4G` و`Speed 4G` و`ZTE` و`Olax` و`Huawei HiLink` و`Alcatel`) وإخفاء حقل اسم المستخدم تلقائياً.
 - **بيانات حقيقية 100% بدون وضع ديمو أو تعليق على أرقام سابقة**:
   - إزالة وضع المحاكاة (الديمو) بالكامل.
   - عرض رقم خدمة المودم المتصل حالياً فقط (`MSISDN / MDN`) ومسح أي بيانات سابقة فور تغيّر المودم أو تسجيل الخروج.
@@ -19,6 +19,6 @@
 - `android_overrides/MainActivity.kt` & `lib/services/wifi_network_binder.dart`: قناة أندرويد الأصلية لقراءة بوابة الواي فاي الحقيقية وربط اتصال التطبيق بالواي فاي.
 - `lib/models/modem_models.dart`: نماذج البيانات الموحدة وأنماط المصادقة (`ModemAuthMode`) والتحقق الصارم من رقم الخدمة.
 - `lib/services/modem_detector.dart`: الفحص الدقيق والتعرف الذكي على الشركة والطراز ونوع تسجيل الدخول.
-- `lib/services/adapters/`: محولات البروتوكولات الحقيقية (`notion_mifi_adapter.dart`, `zte_goform_adapter.dart`, `huawei_hilink_adapter.dart`, `universal_translator_adapter.dart`).
+- `lib/services/adapters/`: محولات البروتوكولات الحقيقية (`marvell_uapxc_adapter.dart`, `notion_mifi_adapter.dart`, `zte_goform_adapter.dart`, `huawei_hilink_adapter.dart`, `universal_translator_adapter.dart`).
 - `lib/services/app_controller.dart`: إدارة الجلسة، منع تداخل بيانات المودمات، والتحديث التلقائي.
 - `lib/widgets/devices_manager_sheet.dart`: لوحة إدارة الأجهزة المتصلة والسابقة والمحظورة والحظر اليدوي عبر `MAC`.

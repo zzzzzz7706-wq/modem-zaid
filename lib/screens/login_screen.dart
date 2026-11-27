@@ -810,7 +810,7 @@ class _LoginScreenState extends State<LoginScreen>
                       ],
                       const SizedBox(height: 24),
                       Text(
-                        'مودم زيد • الإصدار 1.3.0',
+                        'مودم زيد • الإصدار 1.4.0',
                         style: TextStyle(
                           color: p.textSecondary.withOpacity(0.75),
                           fontSize: 12.5,

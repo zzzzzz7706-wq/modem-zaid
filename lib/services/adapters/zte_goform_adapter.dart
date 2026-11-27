@@ -28,6 +28,7 @@ class ZteGoformAdapter implements ModemAdapter {
     required this.localClientIp,
     this.modelHint = 'ZTE / Olax 4G',
     this.useReqProc = false,
+    this.passwordOnly = true,
   });
 
   @override
@@ -43,22 +44,58 @@ class ZteGoformAdapter implements ModemAdapter {
   String get _setPath =>
       useReqProc ? '/reqproc/proc_post' : '/goform/goform_set_cmd_process';
 
+  bool _usesSha256 = false;
+  final bool passwordOnly;
+
   Map<String, String> get _headers => {
         'Referer': 'http://$gatewayIp/index.html',
         'X-Requested-With': 'XMLHttpRequest',
         if (_cookie.isNotEmpty) 'Cookie': _cookie,
       };
 
-  Future<Map<String, dynamic>> _getCmd(List<String> cmds) async {
-    final cmdParam = cmds.join(',');
+  void _saveCookies(Map<String, String> headers) {
+    final sc = headers['set-cookie'];
+    if (sc == null || sc.isEmpty) return;
+    final parts = sc
+        .split(RegExp(r',(?=[^;]+=[^;]+)'))
+        .map((c) => c.split(';').first.trim())
+        .where((s) => s.contains('='))
+        .toList();
+    if (parts.isNotEmpty) {
+      _cookie = parts.join('; ');
+    }
+  }
+
+  /// Queries a single ZTE parameter WITHOUT `multi_data=1` (required by `LD` & `RD`
+  /// on 2023-2025 ZTE / ZXIC / Star Speed 4G firmwares).
+  Future<String> _getSingleCmd(String cmd) async {
+    final ts = DateTime.now().millisecondsSinceEpoch;
     final uri = Uri.parse(
-      'http://$gatewayIp$_getPath?isTest=false&multi_data=1&cmd=${Uri.encodeComponent(cmdParam)}',
+      'http://$gatewayIp$_getPath?isTest=false&cmd=${Uri.encodeComponent(cmd)}&_=$ts',
     );
     final res = await _client
         .get(uri, headers: _headers)
         .timeout(const Duration(seconds: 5));
-    final sc = res.headers['set-cookie'];
-    if (sc != null && sc.isNotEmpty) _cookie = sc.split(';').first;
+    _saveCookies(res.headers);
+    final body = utf8.decode(res.bodyBytes, allowMalformed: true).trim();
+    final start = body.indexOf('{');
+    if (start != -1) {
+      final map = jsonDecode(body.substring(start)) as Map<String, dynamic>;
+      return (map[cmd] ?? '').toString().trim();
+    }
+    return '';
+  }
+
+  Future<Map<String, dynamic>> _getCmd(List<String> cmds) async {
+    final cmdParam = cmds.join(',');
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final uri = Uri.parse(
+      'http://$gatewayIp$_getPath?isTest=false&multi_data=1&cmd=${Uri.encodeComponent(cmdParam)}&_=$ts',
+    );
+    final res = await _client
+        .get(uri, headers: _headers)
+        .timeout(const Duration(seconds: 5));
+    _saveCookies(res.headers);
     final body = utf8.decode(res.bodyBytes, allowMalformed: true).trim();
     final start = body.indexOf('{');
     if (start != -1) {
@@ -67,34 +104,52 @@ class ZteGoformAdapter implements ModemAdapter {
     return {};
   }
 
-  Future<bool> _setCmd(Map<String, String> fields) async {
-    try {
-      Map<String, dynamic> adData = {};
-      try {
-        adData = await _getCmd(['RD', 'wa_inner_version', 'cr_version']);
-      } catch (_) {}
-      final rd = (adData['RD'] ?? '').toString();
-      final bodyFields = Map<String, String>.from(fields);
-      bodyFields['isTest'] = 'false';
-      if (rd.isNotEmpty) {
-        final v1 =
-            '${adData['wa_inner_version'] ?? ''}${adData['cr_version'] ?? ''}';
-        final h1 = md5.convert(utf8.encode(v1)).toString();
-        final ad = md5.convert(utf8.encode('$h1$rd')).toString();
-        bodyFields['AD'] = ad;
-      }
+  static String _sha256Upper(String s) =>
+      sha256.convert(utf8.encode(s)).toString().toUpperCase();
 
-      final uri = Uri.parse('http://$gatewayIp$_setPath');
-      final res = await _client
-          .post(uri, headers: _headers, body: bodyFields)
-          .timeout(const Duration(seconds: 6));
-      final sc = res.headers['set-cookie'];
-      if (sc != null && sc.isNotEmpty) _cookie = sc.split(';').first;
-      final text = utf8.decode(res.bodyBytes, allowMalformed: true);
-      return text.contains('success') || text.contains('"0"');
+  static String _md5Lower(String s) =>
+      md5.convert(utf8.encode(s)).toString().toLowerCase();
+
+  Future<String> _computeAd({required bool useSha256}) async {
+    try {
+      var rd = await _getSingleCmd('RD');
+      final vers = await _getCmd(['RD', 'wa_inner_version', 'cr_version']);
+      if (rd.isEmpty) rd = (vers['RD'] ?? '').toString().trim();
+      if (rd.isEmpty) return '';
+      final v1 = '${vers['wa_inner_version'] ?? ''}${vers['cr_version'] ?? ''}';
+      if (useSha256) {
+        final h1 = _sha256Upper(v1);
+        return _sha256Upper('$h1$rd');
+      } else {
+        final h1 = _md5Lower(v1);
+        return _md5Lower('$h1$rd');
+      }
     } catch (_) {
-      return false;
+      return '';
     }
+  }
+
+  Future<bool> _setCmd(Map<String, String> fields) async {
+    for (final shaMode in [_usesSha256, !_usesSha256]) {
+      try {
+        final ad = await _computeAd(useSha256: shaMode);
+        final bodyFields = Map<String, String>.from(fields);
+        bodyFields['isTest'] = 'false';
+        if (ad.isNotEmpty) bodyFields['AD'] = ad;
+
+        final uri = Uri.parse('http://$gatewayIp$_setPath');
+        final res = await _client
+            .post(uri, headers: _headers, body: bodyFields)
+            .timeout(const Duration(seconds: 6));
+        _saveCookies(res.headers);
+        final text = utf8.decode(res.bodyBytes, allowMalformed: true);
+        if (text.contains('success') || text.contains('"0"')) {
+          _usesSha256 = shaMode;
+          return true;
+        }
+      } catch (_) {}
+    }
+    return false;
   }
 
   @override
@@ -102,13 +157,18 @@ class ZteGoformAdapter implements ModemAdapter {
     _username = username.trim().isEmpty ? 'admin' : username.trim();
     _password = password;
 
-    // Pre-login info: LD (salt for new firmwares), login state, lock state.
     Map<String, dynamic> pre = {};
+    String ld = '';
     bool reachedServer = false;
+    try {
+      ld = await _getSingleCmd('LD');
+      reachedServer = true;
+    } catch (_) {}
     try {
       pre = await _getCmd(
           ['LD', 'loginfo', 'psw_fail_num_str', 'login_lock_time', 'modem_main_state']);
       reachedServer = true;
+      if (ld.isEmpty) ld = (pre['LD'] ?? '').toString().trim();
     } catch (_) {}
 
     if ((pre['loginfo'] ?? '').toString().toLowerCase() == 'ok') {
@@ -120,47 +180,53 @@ class ZteGoformAdapter implements ModemAdapter {
       return LoginOutcome(
         success: false,
         wrongCredentials: false,
-        message: 'المودم مقفل مؤقتاً بسبب محاولات خاطئة. انتظر ${lockTime > 60 ? '${(lockTime / 60).ceil()} دقيقة' : '$lockTime ثانية'} ثم حاول.',
+        message:
+            'المودم مقفل مؤقتاً بسبب محاولات خاطئة. انتظر ${lockTime > 60 ? '${(lockTime / 60).ceil()} دقيقة' : '$lockTime ثانية'} ثم حاول.',
       );
     }
 
-    final ld = (pre['LD'] ?? '').toString().trim();
-    final candidates = <String>[];
+    final candidates = <(String passEncoded, bool shaMode)>[];
     if (ld.isNotEmpty) {
-      // New ZTE / Olax / Speed 4G firmwares: SHA256(SHA256(pwd).upper + LD).upper
-      final inner = sha256.convert(utf8.encode(_password)).toString().toUpperCase();
-      candidates.add(sha256.convert(utf8.encode('$inner$ld')).toString().toUpperCase());
+      _usesSha256 = ld.length >= 48;
+      if (ld.length == 32) {
+        // 128-bit MD5 challenge firmware
+        final innerMd5 = _md5Lower(_password);
+        candidates.add((_md5Lower('$innerMd5$ld'), false));
+      } else {
+        // 2023-2025 ZTE / ZXIC / Star Speed 4G SHA-256 challenge firmware
+        final inner = _sha256Upper(_password);
+        candidates.add((_sha256Upper('$inner$ld'), true));
+      }
     } else {
-      // Classic firmwares: Base64(pwd), then SHA256 variant used by some clones.
-      candidates.add(base64Encode(utf8.encode(_password)));
-      candidates.add(sha256.convert(utf8.encode(_password)).toString().toUpperCase());
+      // Classic ZTE / Olax / Speed 4G firmwares: Base64(pwd), then SHA256(pwd)
+      candidates.add((base64Encode(utf8.encode(_password)), false));
+      candidates.add((_sha256Upper(_password), true));
     }
 
     String lastResult = '';
-    for (final encoded in candidates) {
+    for (final (encoded, shaMode) in candidates) {
       try {
+        final ad = await _computeAd(useSha256: shaMode);
+        final payload = <String, String>{
+          'isTest': 'false',
+          'goformId': 'LOGIN',
+          'password': encoded,
+          if (!passwordOnly) 'username': _username,
+          if (ad.isNotEmpty) 'AD': ad,
+        };
         final uri = Uri.parse('http://$gatewayIp$_setPath');
-        final res = await _client.post(
-          uri,
-          headers: _headers,
-          body: {
-            'isTest': 'false',
-            'goformId': 'LOGIN',
-            'password': encoded,
-            'username': _username,
-          },
-        ).timeout(const Duration(seconds: 6));
+        final res = await _client
+            .post(uri, headers: _headers, body: payload)
+            .timeout(const Duration(seconds: 6));
         reachedServer = true;
-        final sc = res.headers['set-cookie'];
-        if (sc != null && sc.isNotEmpty) _cookie = sc.split(';').first;
+        _saveCookies(res.headers);
         final text = utf8.decode(res.bodyBytes, allowMalformed: true);
         final m = RegExp(r'"result"\s*:\s*"?(\w+)"?').firstMatch(text);
         lastResult = m?.group(1) ?? '';
         if (lastResult == '0' || text.contains('success')) {
+          _usesSha256 = shaMode;
           return const LoginOutcome(success: true);
         }
-        // "3" = wrong password on classic firmwares. With LD there's only one
-        // correct encoding so don't retry (each retry costs a lock attempt).
         if (ld.isNotEmpty) break;
       } catch (_) {}
     }
@@ -173,7 +239,6 @@ class ZteGoformAdapter implements ModemAdapter {
       );
     }
 
-    // Read remaining attempts to give a precise message.
     String left = '';
     try {
       final post = await _getCmd(['psw_fail_num_str', 'loginfo']);
@@ -406,7 +471,13 @@ class ZteGoformAdapter implements ModemAdapter {
       wanConnected:
           (data['ppp_status'] ?? '').toString().toLowerCase().contains('connect'),
       modemPhoneNumber: modemNum,
-      deviceModel: (data['model_name'] ?? modelHint).toString(),
+      deviceModel: () {
+        final m = (data['model_name'] ?? '').toString().trim();
+        if (m.isNotEmpty) return m;
+        final hw = (data['hardware_version'] ?? '').toString().trim();
+        if (hw.isNotEmpty) return hw;
+        return modelHint;
+      }(),
       wanIp: (data['wan_ipaddr'] ?? '-').toString(),
       lanIp: (data['lan_ipaddr'] ?? gatewayIp).toString(),
       macAddress: (data['mac_address'] ?? '-').toString(),

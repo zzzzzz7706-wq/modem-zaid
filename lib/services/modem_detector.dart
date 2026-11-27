@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 import '../models/modem_models.dart';
 import 'adapters/huawei_hilink_adapter.dart';
+import 'adapters/marvell_uapxc_adapter.dart';
 import 'adapters/modem_adapter.dart';
 import 'adapters/notion_mifi_adapter.dart';
 import 'adapters/universal_translator_adapter.dart';
@@ -515,12 +516,27 @@ class ModemDetector {
         page.headers.entries.map((e) => '${e.key}: ${e.value}').join('\n');
     final formAuth = _detectFormAuthMode(page);
 
-    // 1. Notion / Marvell / ASR MiFi (L818A, Vortex, SAM M50, M028T, L02H)
+    // 1. Marvell UAPXC (PTC Yemen 4G CPE `192.168.0.1`) vs Notion Duster MiFi (`L818A`)
     final notionProbe = await _rawHttp(ip, '/login.cgi', localIp);
     final www = (notionProbe.headers['www-authenticate'] ?? '').toLowerCase();
     if (www.contains('digest') ||
         html.contains('xml_action.cgi') ||
         html.contains('g_platformName')) {
+      bool isUapxc = html.contains('lTitleUAPXC') ||
+          html.contains('wifiSetting.js') ||
+          html.contains('PostXml(');
+      if (!isUapxc) {
+        final dusterCheck = await _rawHttp(
+          ip,
+          '/xml_action.cgi?method=get&module=duster&file=status1',
+          localIp,
+          timeout: const Duration(milliseconds: 2000),
+        );
+        if (dusterCheck.body.contains('<error_cause>')) {
+          isUapxc = true;
+        }
+      }
+
       final upnp = await upnpFuture;
       final candidates = [
         ..._upnpCandidates(upnp),
@@ -533,6 +549,34 @@ class ModemDetector {
         html: html,
       );
       if (vendor.isEmpty) vendor = _inferVendorFromCandidates(candidates);
+
+      if (isUapxc) {
+        if (vendor.isEmpty) vendor = 'Yemen 4G';
+        final name = _composeModelName(
+          vendor: vendor,
+          candidates: candidates,
+          ip: ip,
+          fallback: 'CPE',
+        );
+        return DetectionResult(
+          identity: ModemIdentity(
+            gatewayIp: ip,
+            localClientIp: localIp,
+            modelName: name,
+            vendor: vendor,
+            protocolLabel: 'Yemen 4G CPE (UAPXC)',
+            family: ModemFamily.marvellUapxc,
+            reachable: true,
+            authMode: formAuth ?? ModemAuthMode.usernameAndPassword,
+          ),
+          adapter: MarvellUapxcAdapter(
+            gatewayIp: ip,
+            localClientIp: localIp,
+            detectedModelHint: name,
+          ),
+        );
+      }
+
       final name = _composeModelName(
         vendor: vendor,
         candidates: candidates,
@@ -614,91 +658,143 @@ class ModemDetector {
       );
     }
 
-    // 3. ZTE / ZLT / Olax / Speed 4G / Qualcomm CGI (/goform/... or /reqproc/...)
-    const zteQuery =
-        '?isTest=false&multi_data=1&cmd=model_name,hardware_version,wa_inner_version,cr_version,modem_main_state';
+    // 3. ZTE / ZXIC / Star Speed 4G / ZLT / Olax / Qualcomm CGI (/goform/... or /reqproc/...)
+    const zteMultiQuery =
+        '?isTest=false&multi_data=1&cmd=Language,model_name,hardware_version,wa_inner_version,cr_version,modem_main_state,SSID1';
+    var zteLd = await _rawHttp(
+      ip,
+      '/goform/goform_get_cmd_process?isTest=false&cmd=LD',
+      localIp,
+      extraHeaders: {'Referer': 'http://$ip/index.html'},
+    );
     var zte = await _rawHttp(
       ip,
-      '/goform/goform_get_cmd_process$zteQuery',
+      '/goform/goform_get_cmd_process$zteMultiQuery',
       localIp,
       extraHeaders: {'Referer': 'http://$ip/index.html'},
     );
     var useReqProc = false;
-    if (!zte.body.contains('{')) {
-      final reqProc = await _rawHttp(
+    bool isValidZteJson( _HttpProbe p) {
+      if (p.status != 200) return false;
+      final t = p.body.trim();
+      final s = t.indexOf('{');
+      return s != -1 && t.endsWith('}') && !t.toLowerCase().contains('<html');
+    }
+
+    if (!isValidZteJson(zteLd) && !isValidZteJson(zte)) {
+      final reqLd = await _rawHttp(
         ip,
-        '/reqproc/proc_get$zteQuery',
+        '/reqproc/proc_get?isTest=false&cmd=LD',
         localIp,
         extraHeaders: {'Referer': 'http://$ip/index.html'},
       );
-      if (reqProc.body.contains('{')) {
-        zte = reqProc;
+      final reqMulti = await _rawHttp(
+        ip,
+        '/reqproc/proc_get$zteMultiQuery',
+        localIp,
+        extraHeaders: {'Referer': 'http://$ip/index.html'},
+      );
+      if (isValidZteJson(reqLd) || isValidZteJson(reqMulti)) {
+        zteLd = reqLd;
+        zte = reqMulti;
         useReqProc = true;
       }
     }
-    final jsonStart = zte.body.indexOf('{');
-    if (jsonStart != -1) {
-      final zteBody = zte.body.substring(jsonStart).trim();
-      if (zteBody.contains('model_name') ||
-          zteBody.contains('modem_main_state') ||
-          zteBody.contains('cr_version') ||
-          zteBody.contains('hardware_version')) {
-        String zteModel = '';
-        String zteHw = '';
-        try {
-          final map = jsonDecode(zteBody) as Map<String, dynamic>;
-          zteModel = (map['model_name'] ?? '').toString().trim();
-          zteHw = (map['hardware_version'] ?? '').toString().trim();
-        } catch (_) {}
-        final upnp = await upnpFuture;
-        final lowerAll = '$html\n$headerText\n$zteBody'.toLowerCase();
-        final scanned =
-            _resolveVendor(upnp: upnp, primaryText: headerText, html: html);
-        final candidates = [
-          zteModel,
-          if (zteModel.isEmpty && zteHw.isNotEmpty) zteHw,
-          ..._upnpCandidates(upnp),
-          ..._htmlModelCandidates(html),
-        ];
-        final inferred = _inferVendorFromCandidates(candidates);
-        final vendor = _hasWord(lowerAll, 'speed 4g') ||
-                _hasWord(lowerAll, 'speed4g')
-            ? 'Speed 4G'
-            : _hasWord(lowerAll, 'olax')
-                ? 'Olax'
-                : _hasWord(lowerAll, 'zlt')
-                    ? 'ZLT'
-                    : (scanned.isNotEmpty
-                        ? scanned
-                        : (inferred.isNotEmpty
-                            ? inferred
-                            : (useReqProc ? 'Speed 4G / Qualcomm' : 'ZTE')));
-        final name = _composeModelName(
-          vendor: vendor,
-          candidates: candidates,
-          ip: ip,
-          fallback: 'MiFi 4G',
-        );
-        return DetectionResult(
-          identity: ModemIdentity(
-            gatewayIp: ip,
-            localClientIp: localIp,
-            modelName: name,
-            vendor: vendor,
-            protocolLabel:
-                useReqProc ? 'Speed 4G / Qualcomm CGI' : 'ZTE / Olax Goform',
-            family: ModemFamily.zteGoform,
-            reachable: true,
-            authMode: formAuth ?? ModemAuthMode.passwordOnly,
-          ),
-          adapter: ZteGoformAdapter(
-            gatewayIp: ip,
-            localClientIp: localIp,
-            modelHint: name,
-            useReqProc: useReqProc,
-          ),
-        );
+
+    if (isValidZteJson(zteLd) || isValidZteJson(zte)) {
+      final zteBody = isValidZteJson(zte)
+          ? zte.body.substring(zte.body.indexOf('{')).trim()
+          : zteLd.body.substring(zteLd.body.indexOf('{')).trim();
+      String zteModel = '';
+      String zteHw = '';
+      String zteSsid = '';
+      try {
+        final map = jsonDecode(zteBody) as Map<String, dynamic>;
+        zteModel = (map['model_name'] ?? '').toString().trim();
+        zteHw = (map['hardware_version'] ?? '').toString().trim();
+        zteSsid = (map['SSID1'] ?? '').toString().trim();
+      } catch (_) {}
+
+      // ZTE KnockoutJS SPA loads login inputs from /tmpl/login.html & config from /js/config/config.js
+      ModemAuthMode? spaAuth = formAuth;
+      String extraSpaText = '';
+      if (spaAuth == null || zteModel.isEmpty) {
+        final tmpl = await _rawHttp(ip, '/tmpl/login.html', localIp,
+            timeout: const Duration(milliseconds: 1600));
+        if (tmpl.status == 200 && tmpl.body.isNotEmpty) {
+          extraSpaText = tmpl.body;
+          spaAuth ??=
+              _detectFormAuthMode(_PageScan(200, tmpl.headers, tmpl.body));
+        }
+        final cfg = await _rawHttp(ip, '/js/config/config.js', localIp,
+            timeout: const Duration(milliseconds: 1600));
+        if (cfg.status == 200 && cfg.body.isNotEmpty) {
+          extraSpaText = '$extraSpaText\n${cfg.body}';
+          if (spaAuth == null &&
+              RegExp(r'SHOW_LOGIN_USERNAME\s*:\s*true', caseSensitive: false)
+                  .hasMatch(cfg.body)) {
+            spaAuth = ModemAuthMode.usernameAndPassword;
+          }
+        }
       }
+
+      final upnp = await upnpFuture;
+      final lowerAll =
+          '$html\n$headerText\n$zteBody\n$zteSsid\n$extraSpaText'.toLowerCase();
+      final scanned = _resolveVendor(
+        upnp: upnp,
+        primaryText: '$headerText\n$zteSsid',
+        html: '$html\n$extraSpaText',
+      );
+      final candidates = [
+        zteModel,
+        if (zteModel.isEmpty && zteHw.isNotEmpty) zteHw,
+        ..._upnpCandidates(upnp),
+        ..._htmlModelCandidates('$html\n$extraSpaText'),
+      ];
+      final inferred = _inferVendorFromCandidates(candidates);
+      final vendor = lowerAll.contains('star speed') ||
+              lowerAll.contains('starspeed') ||
+              lowerAll.contains('star_speed')
+          ? 'Star Speed 4G'
+          : _hasWord(lowerAll, 'speed 4g') || _hasWord(lowerAll, 'speed4g')
+              ? 'Speed 4G'
+              : _hasWord(lowerAll, 'olax')
+                  ? 'Olax'
+                  : _hasWord(lowerAll, 'zlt')
+                      ? 'ZLT'
+                      : (scanned.isNotEmpty
+                          ? scanned
+                          : (inferred.isNotEmpty
+                              ? inferred
+                              : (useReqProc ? 'Speed 4G' : 'ZTE')));
+      final name = _composeModelName(
+        vendor: vendor,
+        candidates: candidates,
+        ip: ip,
+        fallback: '4G Router',
+      );
+      final resolvedAuth = spaAuth ?? ModemAuthMode.passwordOnly;
+      return DetectionResult(
+        identity: ModemIdentity(
+          gatewayIp: ip,
+          localClientIp: localIp,
+          modelName: name,
+          vendor: vendor,
+          protocolLabel:
+              useReqProc ? 'Speed 4G / Qualcomm CGI' : 'ZTE / Star Speed CGI',
+          family: ModemFamily.zteGoform,
+          reachable: true,
+          authMode: resolvedAuth,
+        ),
+        adapter: ZteGoformAdapter(
+          gatewayIp: ip,
+          localClientIp: localIp,
+          modelHint: name,
+          useReqProc: useReqProc,
+          passwordOnly: resolvedAuth == ModemAuthMode.passwordOnly,
+        ),
+      );
     }
 
     // 4. Universal Smart Translator for ANY other router/modem (PTC ADSL/Fiber,
@@ -810,7 +906,13 @@ class ModemDetector {
 
     // Very small SPA shells: also look at the usual login page names.
     if (firstStatus > 0 && buf.length < 600) {
-      for (final extra in const ['/index.html', '/login.html', '/html/index.html']) {
+      for (final extra in const [
+        '/index.html',
+        '/index.htm',
+        '/login.html',
+        '/login.htm',
+        '/html/index.html',
+      ]) {
         if (visited.contains(extra)) continue;
         final p = await _rawHttp(ip, extra, localIp);
         if (p.status == 200 && p.body.isNotEmpty) {
@@ -894,6 +996,7 @@ class ModemDetector {
     'ZTE': ['zte', 'zxhn', 'zxv10'],
     'Olax': ['olax'],
     'ZLT': ['zlt'],
+    'Star Speed 4G': ['star speed', 'starspeed', 'ستار سبيد'],
     'Speed 4G': ['speed 4g', 'speed4g', 'سبيد فورجي'],
     'SAM': ['sam m50', 'sam 4g', 'sam4g'],
     'Vortex': ['vortex'],
@@ -938,7 +1041,10 @@ class ModemDetector {
         .hasMatch(joined)) {
       return 'Huawei';
     }
-    if (RegExp(r'\b(MF9\d{2}|MF2[89]\d|ZXHN|H108N|H168N|H267N|F6[0678]\d)\b')
+    if (RegExp(r'\b(U10S|B50\s*PRO)\b').hasMatch(joined)) {
+      return 'Star Speed 4G';
+    }
+    if (RegExp(r'\b(MF9\d{2}|MF2[89]\d|MC8\d{2}|MU5\d{3}|ZXHN|H108N|H168N|H267N|F6[0678]\d)\b')
         .hasMatch(joined)) {
       return 'ZTE';
     }

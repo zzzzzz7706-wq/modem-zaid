@@ -4,13 +4,14 @@ import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import '../../models/modem_models.dart';
 import '../modem_detector.dart';
+import '../smart_modem_profiler.dart';
 import 'modem_adapter.dart';
 
-/// Universal Smart Translator Adapter:
-/// Connects to unknown routers/modems (PTC ADSL/Fiber ONTs, Alcatel/Speed 4G
-/// `/jrd/webapi`, Tozed/ZLT `/cgi-bin/lua.cgi`, Huawei EMUI, TP-Link, Tenda,
-/// D-Link, OpenWrt), authenticates via Basic/Digest/JSON-RPC/Form, and reports
-/// ONLY real discovered parameters without fabricating unavailable metrics.
+/// Universal Smart Self-Adapting Translator Adapter:
+/// Connects to ANY router/modem (Alcatel/Speed 4G `/jrd/webapi`, Qualcomm QCMAP
+/// `/cgi-bin/qcmap_auth`, OpenWrt `/ubus`, Jetpack MiFi, PTC ADSL/Fiber ONTs,
+/// Huawei EMUI, TP-Link, Tenda, D-Link, and any modem introspected by
+/// [SmartModemProfiler]) using discovered HTML forms, JS endpoints, and protocols.
 class UniversalTranslatorAdapter implements ModemAdapter {
   @override
   final String gatewayIp;
@@ -21,6 +22,7 @@ class UniversalTranslatorAdapter implements ModemAdapter {
   final String detectedTitle;
   final String baseScheme;
   final int port;
+  final SmartModemProfile? profile;
 
   late final http.Client _client =
       ModemDetector.createLanHttpClient(localClientIp);
@@ -30,7 +32,11 @@ class UniversalTranslatorAdapter implements ModemAdapter {
   String _cookie = '';
   String _authHeader = '';
   String _tclToken = '';
+  String _qcmapToken = '';
+  String _ubusSid = '';
   bool _isJrdWebApi = false;
+  bool _isQcmap = false;
+  bool _isUbus = false;
   final DateTime _sessionStart = DateTime.now();
 
   UniversalTranslatorAdapter({
@@ -39,6 +45,7 @@ class UniversalTranslatorAdapter implements ModemAdapter {
     this.detectedTitle = 'مودم لاسلكي',
     this.baseScheme = 'http',
     this.port = 80,
+    this.profile,
   });
 
   String get _baseUrl {
@@ -52,7 +59,15 @@ class UniversalTranslatorAdapter implements ModemAdapter {
   ModemFamily get family => ModemFamily.universalTranslated;
 
   @override
-  String get protocolName => 'المترجم الذكي الشامل للمودمات';
+  String get protocolName {
+    if (_isJrdWebApi) return 'Alcatel / TCL / Speed 4G JSON-RPC';
+    if (_isQcmap) return 'Qualcomm QCMAP 4G CGI';
+    if (_isUbus) return 'OpenWrt / LuCI ubus';
+    if (profile != null && profile!.detectedProtocol.isNotEmpty) {
+      return profile!.detectedProtocol;
+    }
+    return 'المترجم الذكي التكيّفي للمودمات';
+  }
 
   Map<String, String> get _headers => {
         if (_authHeader.isNotEmpty) 'Authorization': _authHeader,
@@ -174,11 +189,95 @@ class UniversalTranslatorAdapter implements ModemAdapter {
         'uri="$uriPath", response="$resp"$qopPart';
   }
 
+  Future<Map<String, dynamic>?> _qcmapCall(
+    String page, [
+    Map<String, String> extra = const {},
+  ]) async {
+    try {
+      final r = await _client
+          .post(
+            Uri.parse('$_baseUrl/cgi-bin/qcmap_web_cgi'),
+            headers: _headers,
+            body: {
+              'Page': page,
+              'mask': '0',
+              if (_qcmapToken.isNotEmpty) 'token': _qcmapToken,
+              ...extra,
+            },
+          )
+          .timeout(const Duration(seconds: 4));
+      final body = utf8.decode(r.bodyBytes, allowMalformed: true).trim();
+      final idx = body.indexOf('{');
+      if (idx != -1) {
+        final dec = jsonDecode(body.substring(idx));
+        if (dec is Map<String, dynamic>) return dec;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<dynamic> _ubusCall(
+    String object,
+    String method, [
+    Map<String, dynamic> params = const {},
+  ]) async {
+    try {
+      final r = await _client
+          .post(
+            Uri.parse('$_baseUrl/ubus'),
+            headers: {
+              ..._headers,
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'jsonrpc': '2.0',
+              'id': 1,
+              'method': 'call',
+              'params': [
+                _ubusSid.isEmpty ? '00000000000000000000000000000000' : _ubusSid,
+                object,
+                method,
+                params,
+              ],
+            }),
+          )
+          .timeout(const Duration(seconds: 4));
+      final body = utf8.decode(r.bodyBytes, allowMalformed: true).trim();
+      if (body.startsWith('{')) {
+        final dec = jsonDecode(body) as Map<String, dynamic>;
+        final res = dec['result'];
+        if (res is List && res.length >= 2 && res[0] == 0) {
+          return res[1];
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  String _encodeByHint(String pwd, String hint) {
+    switch (hint) {
+      case 'base64':
+        return base64Encode(utf8.encode(pwd));
+      case 'md5_lower':
+        return md5.convert(utf8.encode(pwd)).toString().toLowerCase();
+      case 'sha256_lower':
+        return sha256.convert(utf8.encode(pwd)).toString().toLowerCase();
+      case 'sha256_upper':
+        return sha256.convert(utf8.encode(pwd)).toString().toUpperCase();
+      default:
+        return pwd;
+    }
+  }
+
   @override
   Future<LoginOutcome> loginWithOutcome(String username, String password) async {
     _username = username.trim().isEmpty ? 'admin' : username.trim();
     _password = password;
     _isJrdWebApi = false;
+    _isQcmap = false;
+    _isUbus = false;
+    _qcmapToken = '';
+    _ubusSid = '';
 
     try {
       // 0. Check Inseego / Novatel Jetpack MiFi (/login gSecureToken + /srv/status)
@@ -247,6 +346,54 @@ class UniversalTranslatorAdapter implements ModemAdapter {
         );
       }
 
+      // 1b. Check Qualcomm QCMAP (/cgi-bin/qcmap_auth)
+      try {
+        final qRes = await _client.post(
+          Uri.parse('$_baseUrl/cgi-bin/qcmap_auth'),
+          headers: _headers,
+          body: {
+            'type': 'login',
+            'pwd': _password,
+            'timeout': '3600',
+            'user': _username,
+          },
+        ).timeout(const Duration(seconds: 3));
+        final qBody = utf8.decode(qRes.bodyBytes, allowMalformed: true).trim();
+        if (qRes.statusCode == 200 && qBody.contains('token')) {
+          final idx = qBody.indexOf('{');
+          if (idx != -1) {
+            final map = jsonDecode(qBody.substring(idx)) as Map<String, dynamic>;
+            final tok = (map['token'] ?? '').toString();
+            final result = (map['result'] ?? '').toString();
+            if (tok.isNotEmpty && (result == '0' || result.toLowerCase() == 'success')) {
+              _isQcmap = true;
+              _qcmapToken = tok;
+              return const LoginOutcome(success: true);
+            }
+            if (result.isNotEmpty && result != '0') {
+              return const LoginOutcome(
+                success: false,
+                wrongCredentials: true,
+                message: 'كلمة المرور غير صحيحة.',
+              );
+            }
+          }
+        }
+      } catch (_) {}
+
+      // 1c. Check OpenWrt / LuCI (/ubus)
+      try {
+        final uRes = await _ubusCall('session', 'login', {
+          'username': _username,
+          'password': _password,
+        });
+        if (uRes is Map && (uRes['ubus_rpc_session'] ?? '').toString().isNotEmpty) {
+          _isUbus = true;
+          _ubusSid = uRes['ubus_rpc_session'].toString();
+          return const LoginOutcome(success: true);
+        }
+      } catch (_) {}
+
       final res = await _client
           .get(Uri.parse('$_baseUrl/'))
           .timeout(const Duration(seconds: 5));
@@ -285,6 +432,38 @@ class UniversalTranslatorAdapter implements ModemAdapter {
         );
       }
 
+      // 2. Smart Dynamic HTML <form> Login using introspected SmartModemProfile
+      final prof = profile;
+      if (prof != null && prof.hasFormLogin && prof.loginAction.isNotEmpty) {
+        final encodedPwd = _encodeByHint(_password, prof.passwordEncoding);
+        final formBody = <String, String>{
+          ...prof.hiddenFields,
+          if (prof.usernameField.isNotEmpty) prof.usernameField: _username,
+          if (prof.passwordField.isNotEmpty) prof.passwordField: encodedPwd,
+        };
+        try {
+          final r = await _client
+              .post(
+                Uri.parse('$_baseUrl${prof.loginAction}'),
+                headers: _headers,
+                body: formBody,
+              )
+              .timeout(const Duration(seconds: 4));
+          final cookie = r.headers['set-cookie'];
+          if (cookie != null && cookie.isNotEmpty) {
+            _cookie = cookie.split(';').first;
+            return const LoginOutcome(success: true);
+          }
+          final bLow = utf8.decode(r.bodyBytes, allowMalformed: true).toLowerCase();
+          if (r.statusCode < 400 &&
+              !bLow.contains('invalid') &&
+              !bLow.contains('wrong') &&
+              !bLow.contains('incorrect')) {
+            return const LoginOutcome(success: true);
+          }
+        } catch (_) {}
+      }
+
       final passMd5 = md5.convert(utf8.encode(_password)).toString();
       final passSha256 = sha256.convert(utf8.encode(_password)).toString();
       final passB64 = base64Encode(utf8.encode(_password));
@@ -294,7 +473,9 @@ class UniversalTranslatorAdapter implements ModemAdapter {
           'path': '/cgi-bin/http.cgi',
           'json': true,
           'body': {
+            'cmd': 100,
             'cmdId': 'LOGIN',
+            'method': 'POST',
             'username': _username,
             'password': _password,
             'passwd': passSha256,
@@ -326,6 +507,10 @@ class UniversalTranslatorAdapter implements ModemAdapter {
         {
           'path': '/cgi-bin/luci',
           'body': {'luci_username': _username, 'luci_password': _password},
+        },
+        {
+          'path': '/goform/login',
+          'body': {'username': _username, 'password': passB64},
         },
         {
           'path': '/goform/login',
@@ -387,10 +572,22 @@ class UniversalTranslatorAdapter implements ModemAdapter {
   Future<void> logout() async {
     if (_isJrdWebApi) {
       await _jrdCall('Logout');
+    } else if (_isQcmap && _qcmapToken.isNotEmpty) {
+      try {
+        await _client.post(
+          Uri.parse('$_baseUrl/cgi-bin/qcmap_auth'),
+          headers: _headers,
+          body: {'type': 'logout', 'token': _qcmapToken},
+        );
+      } catch (_) {}
+    } else if (_isUbus && _ubusSid.isNotEmpty) {
+      await _ubusCall('session', 'destroy');
     }
     _cookie = '';
     _authHeader = '';
     _tclToken = '';
+    _qcmapToken = '';
+    _ubusSid = '';
   }
 
   static String? _extractMatch(String content, List<RegExp> patterns) {
@@ -498,6 +695,117 @@ class UniversalTranslatorAdapter implements ModemAdapter {
         hasSignalMetrics: sigStrength > 0,
         hasBandLock: false,
         hasSpeedLimit: false,
+        hasWifiEdit: true,
+        hasMaxClients: true,
+        hasHideSsid: true,
+        hasLcdQrToggle: false,
+        hasDeviceBlock: true,
+        hasDeviceRename: false,
+        hasReboot: true,
+        hasPowerOff: false,
+        hasAdminPassword: false,
+        hasSms: true,
+      ),
+    );
+  }
+
+  Future<ModemStatus> _fetchQcmapStatus() async {
+    final wwan = await _qcmapCall('GetWWANSTATS', {'family': '4'});
+    final lan = await _qcmapCall('GetLANConfig');
+    final wlan = await _qcmapCall('GetWLANStatus');
+    final clients = await _qcmapCall('GetConnectedDevices');
+
+    if (wwan == null && lan == null && wlan == null) {
+      throw SocketException('انقطع الاتصال بالمودم ($gatewayIp)');
+    }
+
+    final rxBytes = int.tryParse((wwan?['bytes_rx'] ?? '0').toString()) ?? 0;
+    final txBytes = int.tryParse((wwan?['bytes_tx'] ?? '0').toString()) ?? 0;
+    final wanIp = (wwan?['public_ip'] ?? wwan?['wan_ip'] ?? '-').toString();
+    final ssid = (wlan?['ssid'] ?? wlan?['SSID'] ?? '').toString();
+    final devices = <ConnectedDevice>[];
+    final rawList = clients?['connected_devices'] ?? clients?['devices'];
+    if (rawList is List) {
+      for (var i = 0; i < rawList.length; i++) {
+        final item = rawList[i];
+        if (item is Map) {
+          final ip = (item['ip'] ?? item['ip_addr'] ?? '').toString();
+          final mac = (item['mac'] ?? item['mac_addr'] ?? '').toString().toUpperCase();
+          final name = (item['host_name'] ?? item['name'] ?? 'جهاز متصل').toString();
+          devices.add(
+            ConnectedDevice(
+              index: i,
+              name: name,
+              ipAddress: ip,
+              macAddress: mac,
+              isCurrentDevice: ip.isNotEmpty && ip == localClientIp,
+            ),
+          );
+        }
+      }
+    }
+
+    return ModemStatus(
+      rxBytes: rxBytes,
+      txBytes: txBytes,
+      totalBytes: rxBytes + txBytes,
+      uptimeSeconds: DateTime.now().difference(_sessionStart).inSeconds,
+      networkType: '4G',
+      wanConnected: wanIp != '-' && wanIp.isNotEmpty && wanIp != '0.0.0.0',
+      deviceModel: detectedTitle,
+      wanIp: wanIp.isNotEmpty ? wanIp : '-',
+      lanIp: gatewayIp,
+      ssid: ssid,
+      connectedDevicesCount: devices.isNotEmpty ? devices.length : 1,
+      adminUsername: _username,
+      adminPassword: _password,
+      devices: devices,
+      capabilities: ModemCapabilities(
+        hasBattery: false,
+        hasSignalMetrics: false,
+        hasBandLock: false,
+        hasSpeedLimit: false,
+        hasWifiEdit: ssid.isNotEmpty,
+        hasMaxClients: false,
+        hasHideSsid: false,
+        hasLcdQrToggle: false,
+        hasDeviceBlock: false,
+        hasDeviceRename: false,
+        hasReboot: true,
+        hasPowerOff: false,
+        hasAdminPassword: false,
+        hasSms: false,
+      ),
+    );
+  }
+
+  Future<ModemStatus> _fetchUbusStatus() async {
+    final board = await _ubusCall('system', 'board');
+    final info = await _ubusCall('system', 'info');
+    if (board == null && info == null) {
+      throw SocketException('انقطع الاتصال بالراوتر ($gatewayIp)');
+    }
+    final bMap = board is Map ? board : const {};
+    final iMap = info is Map ? info : const {};
+    final model = (bMap['model'] ?? bMap['hostname'] ?? detectedTitle).toString();
+    final release = bMap['release'] is Map
+        ? (bMap['release']['description'] ?? '-').toString()
+        : '-';
+    final uptime = int.tryParse((iMap['uptime'] ?? '0').toString()) ?? 0;
+
+    return ModemStatus(
+      uptimeSeconds: uptime,
+      wanConnected: true,
+      deviceModel: model,
+      lanIp: gatewayIp,
+      softwareVersion: release,
+      adminUsername: _username,
+      adminPassword: _password,
+      capabilities: const ModemCapabilities(
+        hasBattery: false,
+        hasSignalMetrics: false,
+        hasBandLock: false,
+        hasSpeedLimit: false,
         hasWifiEdit: false,
         hasMaxClients: false,
         hasHideSsid: false,
@@ -517,9 +825,16 @@ class UniversalTranslatorAdapter implements ModemAdapter {
     if (_isJrdWebApi) {
       return _fetchJrdStatus();
     }
+    if (_isQcmap) {
+      return _fetchQcmapStatus();
+    }
+    if (_isUbus) {
+      return _fetchUbusStatus();
+    }
 
-    final endpoints = [
+    final endpoints = <String>{
       '/',
+      ...(profile?.statusEndpoints ?? const []),
       '/srv/status',
       '/api/system/deviceinfo',
       '/status.json',
@@ -528,7 +843,7 @@ class UniversalTranslatorAdapter implements ModemAdapter {
       '/cgi-bin/status',
       '/status.xml',
       '/main.html',
-    ];
+    }.take(14).toList();
 
     final combinedBuffer = StringBuffer();
     final translatedExtras = <String, String>{};
@@ -744,7 +1059,30 @@ class UniversalTranslatorAdapter implements ModemAdapter {
     required bool hideSsid,
     required int maxClients,
   }) async {
-    for (final path in ['/goform/setWifi', '/api/wifi', '/cgi-bin/wireless']) {
+    if (_isJrdWebApi) {
+      final res = await _jrdCall('SetWlanSettings', {
+        'WlanAPMode': 0,
+        'Ssid': ssid,
+        'SsidHidden': hideSsid ? 1 : 0,
+        'WpaKey': password,
+        'MaxNumsta': maxClients,
+      });
+      if (res != null && res['error'] == null) return true;
+    }
+    if (_isQcmap) {
+      final res = await _qcmapCall('SetWLANConfig', {
+        'ssid': ssid,
+        'passphrase': password,
+      });
+      if (res != null && (res['result'] == '0' || res['result'] == 0)) return true;
+    }
+    final wifiPaths = <String>{
+      ...(profile?.wifiEndpoints ?? const []),
+      '/goform/setWifi',
+      '/api/wifi',
+      '/cgi-bin/wireless',
+    };
+    for (final path in wifiPaths) {
       try {
         final r = await _client
             .post(
@@ -752,7 +1090,9 @@ class UniversalTranslatorAdapter implements ModemAdapter {
               headers: _headers,
               body: {
                 'ssid': ssid,
+                'SSID': ssid,
                 'password': password,
+                'key': password,
                 'hide': hideSsid ? '1' : '0',
               },
             )
@@ -780,17 +1120,37 @@ class UniversalTranslatorAdapter implements ModemAdapter {
       false;
 
   @override
-  Future<bool> blockMacAddress(String macAddress) async => false;
+  Future<bool> blockMacAddress(String macAddress) async {
+    if (_isJrdWebApi) {
+      final res = await _jrdCall('SetDeviceUnlock', {
+        'DeviceName': '',
+        'MacAddress': macAddress.toUpperCase(),
+        'Action': 1,
+      });
+      if (res != null && res['error'] == null) return true;
+    }
+    return false;
+  }
 
   @override
-  Future<bool> unblockMacAddress(String macAddress) async => false;
+  Future<bool> unblockMacAddress(String macAddress) async {
+    if (_isJrdWebApi) {
+      final res = await _jrdCall('SetDeviceUnlock', {
+        'DeviceName': '',
+        'MacAddress': macAddress.toUpperCase(),
+        'Action': 0,
+      });
+      if (res != null && res['error'] == null) return true;
+    }
+    return false;
+  }
 
   @override
   Future<bool> setDeviceBlock({
     required ConnectedDevice device,
     required bool block,
-  }) async =>
-      false;
+  }) =>
+      block ? blockMacAddress(device.macAddress) : unblockMacAddress(device.macAddress);
 
   @override
   Future<bool> renameDevice({
@@ -811,12 +1171,23 @@ class UniversalTranslatorAdapter implements ModemAdapter {
       final res = await _jrdCall('SetDeviceReboot');
       if (res != null && res['error'] == null) return true;
     }
-    for (final path in [
+    if (_isQcmap) {
+      final res = await _qcmapCall('Reboot');
+      if (res != null) return true;
+    }
+    if (_isUbus) {
+      final res = await _ubusCall('system', 'reboot');
+      if (res != null) return true;
+    }
+    final rebootPaths = <String>{
+      ...(profile?.rebootEndpoints ?? const []),
       '/goform/reboot',
+      '/goform/SysToolReboot',
       '/cgi-bin/reboot',
       '/api/reboot',
-      '/reboot.cgi'
-    ]) {
+      '/reboot.cgi',
+    };
+    for (final path in rebootPaths) {
       try {
         final r = await _client
             .post(Uri.parse('$_baseUrl$path'), headers: _headers)
@@ -831,5 +1202,27 @@ class UniversalTranslatorAdapter implements ModemAdapter {
   Future<bool> powerOffModem() async => false;
 
   @override
-  Future<List<SmsMessage>> fetchSmsInbox() async => [];
+  Future<List<SmsMessage>> fetchSmsInbox() async {
+    if (_isJrdWebApi) {
+      final res = await _jrdCall('GetSMSListByContactNum', {
+        'Page': 1,
+        'ContactId': -1,
+      });
+      final list = res?['result']?['SMSList'];
+      if (list is List) {
+        return [
+          for (var i = 0; i < list.length; i++)
+            if (list[i] is Map)
+              SmsMessage(
+                id: (list[i]['SMSId'] ?? '$i').toString(),
+                sender: (list[i]['PhoneNumber'] ?? 'غير معروف').toString(),
+                content: (list[i]['SMSContent'] ?? '').toString(),
+                timestamp: (list[i]['SMSTime'] ?? '').toString(),
+                isUnread: (list[i]['SMSType'] ?? '').toString() == '1',
+              ),
+        ];
+      }
+    }
+    return [];
+  }
 }

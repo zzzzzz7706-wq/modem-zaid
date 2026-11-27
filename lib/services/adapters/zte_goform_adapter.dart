@@ -17,6 +17,10 @@ class ZteGoformAdapter implements ModemAdapter {
 
   final String modelHint;
   final bool useReqProc;
+  final String customGetPath;
+  final String customSetPath;
+  final String preferredEncoding;
+  final bool usesMultiUserLogin;
   late final http.Client _client =
       ModemDetector.createLanHttpClient(localClientIp);
   String _cookie = '';
@@ -29,6 +33,10 @@ class ZteGoformAdapter implements ModemAdapter {
     this.modelHint = 'ZTE / Olax 4G',
     this.useReqProc = false,
     this.passwordOnly = true,
+    this.customGetPath = '',
+    this.customSetPath = '',
+    this.preferredEncoding = '',
+    this.usesMultiUserLogin = false,
   });
 
   @override
@@ -36,13 +44,15 @@ class ZteGoformAdapter implements ModemAdapter {
 
   @override
   String get protocolName =>
-      useReqProc ? 'Qualcomm / Speed 4G CGI' : 'ZTE / Olax Goform CGI';
+      useReqProc ? 'Qualcomm / Speed 4G CGI' : 'ZTE / Star Speed Goform CGI';
 
-  String get _getPath =>
-      useReqProc ? '/reqproc/proc_get' : '/goform/goform_get_cmd_process';
+  String get _getPath => customGetPath.isNotEmpty
+      ? customGetPath
+      : (useReqProc ? '/reqproc/proc_get' : '/goform/goform_get_cmd_process');
 
-  String get _setPath =>
-      useReqProc ? '/reqproc/proc_post' : '/goform/goform_set_cmd_process';
+  String get _setPath => customSetPath.isNotEmpty
+      ? customSetPath
+      : (useReqProc ? '/reqproc/proc_post' : '/goform/goform_set_cmd_process');
 
   bool _usesSha256 = false;
   final bool passwordOnly;
@@ -106,6 +116,9 @@ class ZteGoformAdapter implements ModemAdapter {
 
   static String _sha256Upper(String s) =>
       sha256.convert(utf8.encode(s)).toString().toUpperCase();
+
+  static String _sha256Lower(String s) =>
+      sha256.convert(utf8.encode(s)).toString().toLowerCase();
 
   static String _md5Lower(String s) =>
       md5.convert(utf8.encode(s)).toString().toLowerCase();
@@ -186,8 +199,15 @@ class ZteGoformAdapter implements ModemAdapter {
     }
 
     final candidates = <(String passEncoded, bool shaMode)>[];
+    final b64 = base64Encode(utf8.encode(_password));
     if (ld.isNotEmpty) {
       _usesSha256 = ld.length >= 48;
+      if (preferredEncoding == 'base64') {
+        candidates.add((b64, false));
+      }
+      if (preferredEncoding == 'sha256_lower') {
+        candidates.add((_sha256Lower('${_sha256Lower(_password)}$ld'), true));
+      }
       if (ld.length == 32) {
         // 128-bit MD5 challenge firmware
         final innerMd5 = _md5Lower(_password);
@@ -196,22 +216,35 @@ class ZteGoformAdapter implements ModemAdapter {
         // 2023-2025 ZTE / ZXIC / Star Speed 4G SHA-256 challenge firmware
         final inner = _sha256Upper(_password);
         candidates.add((_sha256Upper('$inner$ld'), true));
+        // Some Star Speed 4G / ZXIC clones use lowercase SHA256 or Base64 despite LD
+        if (failLeft != '1' && failLeft != '2') {
+          candidates.add((_sha256Lower('${_sha256Lower(_password)}$ld'), true));
+          candidates.add((b64, false));
+        }
       }
     } else {
-      // Classic ZTE / Olax / Speed 4G firmwares: Base64(pwd), then SHA256(pwd)
-      candidates.add((base64Encode(utf8.encode(_password)), false));
-      candidates.add((_sha256Upper(_password), true));
+      // Classic ZTE / Olax / Speed 4G firmwares: Base64(pwd), then SHA256(pwd), then plain
+      if (preferredEncoding == 'sha256_upper' || preferredEncoding == 'sha256_lower') {
+        candidates.add((_sha256Upper(_password), true));
+        candidates.add((b64, false));
+      } else {
+        candidates.add((b64, false));
+        candidates.add((_sha256Upper(_password), true));
+      }
+      candidates.add((_password, false));
     }
 
+    final loginGoformId =
+        (usesMultiUserLogin && !passwordOnly) ? 'LOGIN_MULTI_USER' : 'LOGIN';
     String lastResult = '';
     for (final (encoded, shaMode) in candidates) {
       try {
         final ad = await _computeAd(useSha256: shaMode);
         final payload = <String, String>{
           'isTest': 'false',
-          'goformId': 'LOGIN',
+          'goformId': loginGoformId,
           'password': encoded,
-          if (!passwordOnly) 'username': _username,
+          if (!passwordOnly || usesMultiUserLogin) 'username': _username,
           if (ad.isNotEmpty) 'AD': ad,
         };
         final uri = Uri.parse('http://$gatewayIp$_setPath');
@@ -227,7 +260,8 @@ class ZteGoformAdapter implements ModemAdapter {
           _usesSha256 = shaMode;
           return const LoginOutcome(success: true);
         }
-        if (ld.isNotEmpty) break;
+        // Stop early if remaining attempts dropped low to prevent modem lockout
+        if (ld.isNotEmpty && (failLeft == '1' || failLeft == '2')) break;
       } catch (_) {}
     }
 

@@ -2,6 +2,7 @@ enum ModemFamily {
   notionMifi,
   marvellUapxc,
   zteGoform,
+  tozedZlt,
   huaweiHilink,
   universalTranslated,
 }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/app_controller.dart';
+import '../widgets/smart_modem_inspector_sheet.dart';
 import '../widgets/wifi_quick_modal.dart';
 
 class DiagnosticsTab extends StatefulWidget {
@@ -302,6 +303,24 @@ class _DiagnosticsTabState extends State<DiagnosticsTab> {
                     _capChip('البطارية الحية', s.capabilities.hasBattery, p),
                     _capChip('رسائل الشريحة SMS', s.capabilities.hasSms, p),
                   ],
+                ),
+                const SizedBox(height: 14),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: p.accentSecondary,
+                    side: BorderSide(color: p.accentSecondary.withOpacity(0.45)),
+                    padding: const EdgeInsets.symmetric(vertical: 11),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  onPressed: () =>
+                      showSmartModemInspectorSheet(context, widget.controller),
+                  icon: const Icon(Icons.auto_awesome_rounded, size: 18),
+                  label: const Text(
+                    'محلل المودم الذكي (فحص البصمة والبروتوكول)',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
                 ),
               ],
             ),

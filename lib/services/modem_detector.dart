@@ -9,8 +9,10 @@ import 'adapters/huawei_hilink_adapter.dart';
 import 'adapters/marvell_uapxc_adapter.dart';
 import 'adapters/modem_adapter.dart';
 import 'adapters/notion_mifi_adapter.dart';
+import 'adapters/tozed_zlt_adapter.dart';
 import 'adapters/universal_translator_adapter.dart';
 import 'adapters/zte_goform_adapter.dart';
+import 'smart_modem_profiler.dart';
 import 'wifi_network_binder.dart';
 
 class DetectionResult {
@@ -483,7 +485,10 @@ class ModemDetector {
   }
 
   /// Auto-discovers and fingerprints the active modem on LAN.
-  static Future<DetectionResult> autoDetect({String? preferredIp}) async {
+  static Future<DetectionResult> autoDetect({
+    String? preferredIp,
+    ModemFamily? forcedFamily,
+  }) async {
     // 1. Ask Android for the REAL Wi-Fi gateway and bind the app to Wi-Fi.
     final wifi = await WifiNetworkBinder.query(bind: true);
     final hasCustom = preferredIp != null && preferredIp.trim().isNotEmpty;
@@ -520,7 +525,11 @@ class ModemDetector {
 
     final ordered = candidates.where(open80.contains).toList();
     for (final ip in ordered) {
-      final res = await fingerprintGateway(ip, localIp);
+      final res = await fingerprintGateway(
+        ip,
+        localIp,
+        forcedFamily: forcedFamily,
+      );
       if (res != null) return res;
     }
 
@@ -614,8 +623,13 @@ class ModemDetector {
   /// Probes HTTP endpoints on `ip` over Wi-Fi socket to identify modem protocol & model.
   static Future<DetectionResult?> fingerprintGateway(
     String ip,
-    String localIp,
-  ) async {
+    String localIp, {
+    ModemFamily? forcedFamily,
+  }) async {
+    if (forcedFamily != null) {
+      return _buildForcedResult(ip, localIp, forcedFamily);
+    }
+
     // UPnP runs in parallel – it often reveals manufacturer + exact model.
     final upnpFuture = _discoverUpnp(ip, localIp)
         .timeout(const Duration(seconds: 4), onTimeout: () => null)
@@ -904,12 +918,154 @@ class ModemDetector {
           modelHint: name,
           useReqProc: useReqProc,
           passwordOnly: resolvedAuth == ModemAuthMode.passwordOnly,
+          usesMultiUserLogin: extraSpaText.contains('LOGIN_MULTI_USER') ||
+              RegExp(r'SHOW_LOGIN_USERNAME\s*:\s*true', caseSensitive: false)
+                  .hasMatch(extraSpaText),
         ),
       );
     }
 
-    // 4. Universal Smart Translator for ANY other router/modem (Jetpack MiFi,
-    // PTC ADSL/Fiber, Huawei EMUI B312, Alcatel /jrd/webapi, Tozed ZLT, etc.)
+    // 3b. Tozed / ZLT / Star Speed 4G / Olax / SAM / Vortex JSON CGI
+    // (`/cgi-bin/http.cgi` or `/cgi-bin/lua.cgi`)
+    final tozedProbes = await Future.wait([
+      _rawHttp(ip, '/cgi-bin/http.cgi', localIp,
+          timeout: const Duration(milliseconds: 1400)),
+      _rawHttp(ip, '/cgi-bin/lua.cgi', localIp,
+          timeout: const Duration(milliseconds: 1400)),
+    ]);
+    String tozedEp = '';
+    if (tozedProbes[0].status == 200 ||
+        tozedProbes[0].status == 405 ||
+        tozedProbes[0].body.trim().startsWith('{') ||
+        html.contains('/cgi-bin/http.cgi')) {
+      tozedEp = '/cgi-bin/http.cgi';
+    } else if (tozedProbes[1].status == 200 ||
+        tozedProbes[1].status == 405 ||
+        tozedProbes[1].body.trim().startsWith('{') ||
+        html.contains('/cgi-bin/lua.cgi')) {
+      tozedEp = '/cgi-bin/lua.cgi';
+    }
+
+    // 4. Smart JS/HTML Protocol Introspection for ANY remaining Yemen 4G / router
+    // (Star Speed custom FW, ZLT, Qualcomm QCMAP, Alcatel/TCL /jrd/webapi,
+    // Jetpack MiFi, Huawei EMUI, OpenWrt ubus, Tenda, TP-Link, ADSL/Fiber ONT)
+    SmartModemProfile? smartProfile;
+    if (page.responded && html.isNotEmpty) {
+      smartProfile = await SmartModemProfiler.profileFromHtml(
+        ip: ip,
+        localIp: localIp,
+        html: html,
+        headers: page.headers,
+      );
+      if (tozedEp.isEmpty && smartProfile.familyHint == ModemFamily.tozedZlt) {
+        tozedEp = smartProfile.discoveredEndpoints.firstWhere(
+          (e) => e.contains('http.cgi') || e.contains('lua.cgi'),
+          orElse: () => '/cgi-bin/http.cgi',
+        );
+      }
+    }
+
+    if (tozedEp.isNotEmpty) {
+      final upnp = await upnpFuture;
+      final candidates = [
+        ..._upnpCandidates(upnp),
+        ..._htmlModelCandidates(html),
+      ];
+      var vendor = _resolveVendor(
+        upnp: upnp,
+        primaryText: headerText,
+        html: html,
+      );
+      if (vendor.isEmpty) vendor = _inferVendorFromCandidates(candidates);
+      if (vendor.isEmpty) vendor = 'Star Speed / ZLT';
+      final name = _composeModelName(
+        vendor: vendor,
+        candidates: candidates,
+        ip: ip,
+        fallback: '4G Router',
+      );
+      return DetectionResult(
+        identity: ModemIdentity(
+          gatewayIp: ip,
+          localClientIp: localIp,
+          modelName: name,
+          vendor: vendor,
+          protocolLabel: tozedEp.contains('lua.cgi')
+              ? 'Tozed / ZLT / Star Speed (Lua)'
+              : 'Tozed / ZLT / Star Speed (CGI)',
+          family: ModemFamily.tozedZlt,
+          reachable: true,
+          authMode: formAuth ?? ModemAuthMode.usernameAndPassword,
+        ),
+        adapter: TozedZltAdapter(
+          gatewayIp: ip,
+          localClientIp: localIp,
+          endpointPath: tozedEp,
+          modelHint: name,
+          preferredEncoding: smartProfile?.passwordEncoding ?? '',
+        ),
+      );
+    }
+
+    // If JS introspection discovered a ZTE/Star Speed Goform endpoint on a non-standard path
+    if (smartProfile != null &&
+        smartProfile.familyHint == ModemFamily.zteGoform) {
+      final getEp = smartProfile.discoveredEndpoints.firstWhere(
+        (e) => e.contains('goform_get_cmd_process') || e.contains('proc_get'),
+        orElse: () => '/goform/goform_get_cmd_process',
+      );
+      final setEp = smartProfile.discoveredEndpoints.firstWhere(
+        (e) => e.contains('goform_set_cmd_process') || e.contains('proc_post'),
+        orElse: () => getEp.contains('proc_get')
+            ? '/reqproc/proc_post'
+            : '/goform/goform_set_cmd_process',
+      );
+      final upnp = await upnpFuture;
+      final candidates = [
+        ..._upnpCandidates(upnp),
+        ..._htmlModelCandidates(html),
+      ];
+      var vendor = _resolveVendor(
+        upnp: upnp,
+        primaryText: headerText,
+        html: html,
+      );
+      if (vendor.isEmpty) vendor = _inferVendorFromCandidates(candidates);
+      if (vendor.isEmpty) vendor = 'Star Speed 4G';
+      final name = _composeModelName(
+        vendor: vendor,
+        candidates: candidates,
+        ip: ip,
+        fallback: '4G Router',
+      );
+      final resolvedAuth = smartProfile.usesMultiUserLogin
+          ? ModemAuthMode.usernameAndPassword
+          : (formAuth ?? ModemAuthMode.passwordOnly);
+      return DetectionResult(
+        identity: ModemIdentity(
+          gatewayIp: ip,
+          localClientIp: localIp,
+          modelName: name,
+          vendor: vendor,
+          protocolLabel: 'Star Speed / ZTE الذكي (JS)',
+          family: ModemFamily.zteGoform,
+          reachable: true,
+          authMode: resolvedAuth,
+        ),
+        adapter: ZteGoformAdapter(
+          gatewayIp: ip,
+          localClientIp: localIp,
+          modelHint: name,
+          useReqProc: getEp.contains('proc_get'),
+          customGetPath: getEp,
+          customSetPath: setEp,
+          passwordOnly: resolvedAuth == ModemAuthMode.passwordOnly,
+          preferredEncoding: smartProfile.passwordEncoding,
+          usesMultiUserLogin: smartProfile.usesMultiUserLogin,
+        ),
+      );
+    }
+
     final emuiDev = await _rawHttp(ip, '/api/system/deviceinfo', localIp,
         timeout: const Duration(milliseconds: 1600));
     final jetpackSrv = await _rawHttp(ip, '/srv/status', localIp,
@@ -967,14 +1123,18 @@ class ModemDetector {
           vendor == 'Star Speed 4G' ||
           vendor == 'Speed 4G' ||
           emuiModel.isNotEmpty;
+      final protoLabel = isJetpack
+          ? 'Jetpack MiFi API'
+          : (smartProfile != null && smartProfile.detectedProtocol.isNotEmpty
+              ? smartProfile.detectedProtocol
+              : 'المترجم الذكي التكيّفي');
       return DetectionResult(
         identity: ModemIdentity(
           gatewayIp: ip,
           localClientIp: localIp,
           modelName: name,
           vendor: vendor,
-          protocolLabel:
-              isJetpack ? 'Jetpack MiFi API' : 'المترجم الذكي الشامل',
+          protocolLabel: protoLabel,
           family: ModemFamily.universalTranslated,
           reachable: true,
           authMode: formAuth ??
@@ -988,10 +1148,102 @@ class ModemDetector {
           detectedTitle: name,
           baseScheme: redirectsToHttps ? 'https' : 'http',
           port: redirectsToHttps ? 443 : 80,
+          profile: smartProfile,
         ),
       );
     }
     return null;
+  }
+
+  static DetectionResult _buildForcedResult(
+    String ip,
+    String localIp,
+    ModemFamily forced,
+  ) {
+    switch (forced) {
+      case ModemFamily.marvellUapxc:
+        return DetectionResult(
+          identity: ModemIdentity(
+            gatewayIp: ip,
+            localClientIp: localIp,
+            modelName: 'Yemen 4G CPE ($ip)',
+            vendor: 'Yemen 4G',
+            protocolLabel: 'يدوي • Yemen 4G CPE (UAPXC)',
+            family: ModemFamily.marvellUapxc,
+            reachable: true,
+          ),
+          adapter: MarvellUapxcAdapter(gatewayIp: ip, localClientIp: localIp),
+        );
+      case ModemFamily.notionMifi:
+        return DetectionResult(
+          identity: ModemIdentity(
+            gatewayIp: ip,
+            localClientIp: localIp,
+            modelName: 'Notion MiFi ($ip)',
+            vendor: 'Notion',
+            protocolLabel: 'يدوي • Notion / Yemen 4G MiFi',
+            family: ModemFamily.notionMifi,
+            reachable: true,
+          ),
+          adapter: NotionMifiAdapter(gatewayIp: ip, localClientIp: localIp),
+        );
+      case ModemFamily.zteGoform:
+        return DetectionResult(
+          identity: ModemIdentity(
+            gatewayIp: ip,
+            localClientIp: localIp,
+            modelName: 'Star Speed / ZTE ($ip)',
+            vendor: 'Star Speed 4G',
+            protocolLabel: 'يدوي • ZTE / Star Speed CGI',
+            family: ModemFamily.zteGoform,
+            reachable: true,
+            authMode: ModemAuthMode.passwordOnly,
+          ),
+          adapter: ZteGoformAdapter(gatewayIp: ip, localClientIp: localIp),
+        );
+      case ModemFamily.tozedZlt:
+        return DetectionResult(
+          identity: ModemIdentity(
+            gatewayIp: ip,
+            localClientIp: localIp,
+            modelName: 'Star Speed / ZLT ($ip)',
+            vendor: 'Star Speed / ZLT',
+            protocolLabel: 'يدوي • Tozed / ZLT / Star Speed CGI',
+            family: ModemFamily.tozedZlt,
+            reachable: true,
+          ),
+          adapter: TozedZltAdapter(gatewayIp: ip, localClientIp: localIp),
+        );
+      case ModemFamily.huaweiHilink:
+        return DetectionResult(
+          identity: ModemIdentity(
+            gatewayIp: ip,
+            localClientIp: localIp,
+            modelName: 'Huawei HiLink ($ip)',
+            vendor: 'Huawei',
+            protocolLabel: 'يدوي • Huawei HiLink API',
+            family: ModemFamily.huaweiHilink,
+            reachable: true,
+            authMode: ModemAuthMode.passwordOnly,
+          ),
+          adapter: HuaweiHilinkAdapter(gatewayIp: ip, localClientIp: localIp),
+        );
+      case ModemFamily.universalTranslated:
+        return DetectionResult(
+          identity: ModemIdentity(
+            gatewayIp: ip,
+            localClientIp: localIp,
+            modelName: 'مودم عام ($ip)',
+            protocolLabel: 'يدوي • المترجم الذكي التكيّفي',
+            family: ModemFamily.universalTranslated,
+            reachable: true,
+          ),
+          adapter: UniversalTranslatorAdapter(
+            gatewayIp: ip,
+            localClientIp: localIp,
+          ),
+        );
+    }
   }
 
   /// Fetches `/` and follows HTTP + meta/JS redirects (max 4 hops) on the same host.

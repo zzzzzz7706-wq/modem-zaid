@@ -7,6 +7,7 @@ import '../models/modem_models.dart';
 import '../theme/app_theme.dart';
 import 'adapters/modem_adapter.dart';
 import 'modem_detector.dart';
+import 'smart_modem_profiler.dart';
 import 'wifi_network_binder.dart';
 
 class AppController extends ChangeNotifier {
@@ -58,6 +59,9 @@ class AppController extends ChangeNotifier {
 
   String _customGatewayIp = '';
   String get customGatewayIp => _customGatewayIp;
+
+  ModemFamily? _forcedFamily;
+  ModemFamily? get forcedFamily => _forcedFamily;
 
   /// Real service number of the CURRENTLY connected & logged-in modem only.
   /// Never falls back to a number remembered from a previous modem.
@@ -181,6 +185,24 @@ class AppController extends ChangeNotifier {
     await detectModem();
   }
 
+  Future<void> setForcedFamily(ModemFamily? family) async {
+    _forcedFamily = family;
+    notifyListeners();
+    await detectModem();
+  }
+
+  Future<SmartModemProfile> inspectConnectedModem() async {
+    final wifi = await WifiNetworkBinder.query(bind: true);
+    final gw = _customGatewayIp.isNotEmpty
+        ? _customGatewayIp
+        : (_identity.gatewayIp.isNotEmpty
+            ? _identity.gatewayIp
+            : (wifi.gateway.isNotEmpty ? wifi.gateway : '192.168.0.1'));
+    final localIp =
+        wifi.localIp.isNotEmpty ? wifi.localIp : _identity.localClientIp;
+    return SmartModemProfiler.inspectGateway(gw, localIp);
+  }
+
   bool _isSameModem(ModemIdentity a, ModemIdentity b) =>
       a.gatewayIp == b.gatewayIp && a.family == b.family;
 
@@ -203,6 +225,7 @@ class AppController extends ChangeNotifier {
       _lastSeenWifiSig = '${wifi.connected}|${wifi.gateway}|${wifi.localIp}';
       final result = await ModemDetector.autoDetect(
         preferredIp: _customGatewayIp.isEmpty ? null : _customGatewayIp,
+        forcedFamily: _forcedFamily,
       );
       if (!_isSameModem(_identity, result.identity) ||
           !result.identity.reachable) {

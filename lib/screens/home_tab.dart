@@ -60,13 +60,19 @@ class HomeTab extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '${s.deviceModel} • ${s.operatorName}',
+                  [
+                    if (s.deviceModel.isNotEmpty) s.deviceModel,
+                    if (s.operatorName.isNotEmpty) s.operatorName,
+                    controller.isConnectionLost ? 'إعادة اتصال...' : 'مباشر',
+                  ].join(' • '),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 11.5,
                     fontWeight: FontWeight.w600,
-                    color: p.textSecondary,
+                    color: controller.isConnectionLost
+                        ? p.warning
+                        : p.textSecondary,
                   ),
                 ),
                 const SizedBox(height: 2),
@@ -471,24 +477,26 @@ class HomeTab extends StatelessWidget {
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: p.accentPrimary.withOpacity(0.18),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    s.band,
-                    textDirection: TextDirection.ltr,
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: p.accentPrimary,
+                if (s.band.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: p.accentPrimary.withOpacity(0.18),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      s.band,
+                      textDirection: TextDirection.ltr,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: p.accentPrimary,
+                      ),
                     ),
                   ),
-                ),
+                ],
               ],
             ),
           ],

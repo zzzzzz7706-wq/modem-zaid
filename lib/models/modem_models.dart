@@ -140,6 +140,18 @@ class BalanceInfo {
   });
 }
 
+class LoginOutcome {
+  final bool success;
+  final bool wrongCredentials;
+  final String message;
+
+  const LoginOutcome({
+    required this.success,
+    this.wrongCredentials = false,
+    this.message = '',
+  });
+}
+
 class ModemStatus {
   // Battery
   final bool hasBattery;
@@ -155,11 +167,11 @@ class ModemStatus {
   final int uptimeSeconds;
 
   // Signal & Network
-  final String networkType; // 4G, 3G, 4G+, 5G
+  final String networkType;
   final String operatorName;
-  final int signalBars; // 0..5
-  final int signalPercent; // 0..100
-  final String band; // e.g. B28, B3
+  final int signalBars;
+  final int signalPercent;
+  final String band;
   final String rsrp;
   final String rsrq;
   final String sinr;
@@ -174,6 +186,7 @@ class ModemStatus {
   final String wanIp;
   final String lanIp;
   final String macAddress;
+  final String currentDeviceMac;
   final String imei;
   final String iccid;
   final String imsi;
@@ -192,7 +205,7 @@ class ModemStatus {
 
   // Band Lock
   final bool isManualBand;
-  final String networkMode; // auto, 4g_only, 3g_only
+  final String networkMode;
   final List<String> selectedBands;
   final List<String> supportedBands;
 
@@ -205,13 +218,14 @@ class ModemStatus {
   final String adminUsername;
   final String adminPassword;
 
-  // Connected Devices & Translated Extras
+  // Connected & Blocked Devices + Translated Extras
   final List<ConnectedDevice> devices;
+  final List<String> blockedMacs;
   final Map<String, String> translatedExtras;
   final ModemCapabilities capabilities;
 
   const ModemStatus({
-    this.hasBattery = true,
+    this.hasBattery = false,
     this.batteryPercent = 0,
     this.isCharging = false,
     this.rxBytes = 0,
@@ -220,35 +234,36 @@ class ModemStatus {
     this.rxRateBps = 0,
     this.txRateBps = 0,
     this.uptimeSeconds = 0,
-    this.networkType = '4G',
-    this.operatorName = 'Yemen 4G',
-    this.signalBars = 4,
-    this.signalPercent = 80,
-    this.band = 'B28',
+    this.networkType = '',
+    this.operatorName = '',
+    this.signalBars = 0,
+    this.signalPercent = 0,
+    this.band = '',
     this.rsrp = '-',
     this.rsrq = '-',
     this.sinr = '-',
     this.rssi = '-',
     this.pci = '-',
     this.cellId = '-',
-    this.wanConnected = true,
+    this.wanConnected = false,
     this.modemPhoneNumber = '',
-    this.deviceModel = 'Modem 4G',
+    this.deviceModel = '',
     this.wanIp = '-',
-    this.lanIp = '192.168.43.1',
+    this.lanIp = '',
     this.macAddress = '-',
+    this.currentDeviceMac = '',
     this.imei = '-',
     this.iccid = '-',
     this.imsi = '-',
     this.softwareVersion = '-',
     this.hardwareVersion = '-',
-    this.ssid = 'Yemen4G',
+    this.ssid = '',
     this.wifiPassword = '',
     this.isHiddenSsid = false,
     this.securityMode = 'WPA2-PSK',
     this.cipherMode = 'AES-CCMP',
     this.maxClients = 10,
-    this.connectedDevicesCount = 1,
+    this.connectedDevicesCount = 0,
     this.lcdQrEnabled = false,
     this.isManualBand = false,
     this.networkMode = 'auto',
@@ -260,24 +275,130 @@ class ModemStatus {
     this.adminUsername = 'admin',
     this.adminPassword = '',
     this.devices = const [],
+    this.blockedMacs = const [],
     this.translatedExtras = const {},
     this.capabilities = const ModemCapabilities(),
   });
 
-  static String normalizeModemNumber(String raw) {
-    var s = raw.trim().replaceAll(RegExp(r'[\s\-]'), '');
-    if (s.isEmpty || s == 'NA' || s == 'unknown') return '';
+  ModemStatus copyWithUptime(int newUptimeSeconds) {
+    return ModemStatus(
+      hasBattery: hasBattery,
+      batteryPercent: batteryPercent,
+      isCharging: isCharging,
+      rxBytes: rxBytes,
+      txBytes: txBytes,
+      totalBytes: totalBytes,
+      rxRateBps: rxRateBps,
+      txRateBps: txRateBps,
+      uptimeSeconds: newUptimeSeconds,
+      networkType: networkType,
+      operatorName: operatorName,
+      signalBars: signalBars,
+      signalPercent: signalPercent,
+      band: band,
+      rsrp: rsrp,
+      rsrq: rsrq,
+      sinr: sinr,
+      rssi: rssi,
+      pci: pci,
+      cellId: cellId,
+      wanConnected: wanConnected,
+      modemPhoneNumber: modemPhoneNumber,
+      deviceModel: deviceModel,
+      wanIp: wanIp,
+      lanIp: lanIp,
+      macAddress: macAddress,
+      currentDeviceMac: currentDeviceMac,
+      imei: imei,
+      iccid: iccid,
+      imsi: imsi,
+      softwareVersion: softwareVersion,
+      hardwareVersion: hardwareVersion,
+      ssid: ssid,
+      wifiPassword: wifiPassword,
+      isHiddenSsid: isHiddenSsid,
+      securityMode: securityMode,
+      cipherMode: cipherMode,
+      maxClients: maxClients,
+      connectedDevicesCount: connectedDevicesCount,
+      lcdQrEnabled: lcdQrEnabled,
+      isManualBand: isManualBand,
+      networkMode: networkMode,
+      selectedBands: selectedBands,
+      supportedBands: supportedBands,
+      speedLimitEnabled: speedLimitEnabled,
+      downloadLimitMbps: downloadLimitMbps,
+      uploadLimitMbps: uploadLimitMbps,
+      adminUsername: adminUsername,
+      adminPassword: adminPassword,
+      devices: devices,
+      blockedMacs: blockedMacs,
+      translatedExtras: translatedExtras,
+      capabilities: capabilities,
+    );
+  }
+
+  /// Normalizes and validates a Yemen 4G / telecom subscriber number, strictly
+  /// rejecting IMEI (15 digits 86...), ICCID (19-20 digits 89967...), and IMSI (15 digits 421...).
+  static String normalizeModemNumber(
+    String raw, {
+    String imei = '',
+    String iccid = '',
+    String imsi = '',
+  }) {
+    var s = raw.trim().replaceAll(RegExp(r'[\s\-\(\)]'), '');
+    if (s.isEmpty ||
+        s.toLowerCase() == 'na' ||
+        s.toLowerCase() == 'n/a' ||
+        s.toLowerCase() == 'unknown' ||
+        s.toLowerCase() == 'null' ||
+        s == '-') {
+      return '';
+    }
     if (s.startsWith('+967')) {
       s = s.substring(4);
     } else if (s.startsWith('00967')) {
       s = s.substring(5);
-    } else if (s.startsWith('967') && s.length >= 11) {
+    } else if (s.startsWith('967') && s.length >= 11 && s.length <= 12) {
       s = s.substring(3);
     }
+
+    // Must contain only digits after stripping country prefix
+    if (!RegExp(r'^\d+$').hasMatch(s)) return '';
+
+    // Reject if identical to IMEI, ICCID, or IMSI, or matches their prefixes/lengths
+    final cleanImei = imei.trim();
+    final cleanIccid = iccid.trim();
+    final cleanImsi = imsi.trim();
+    if (s == cleanImei || s == cleanIccid || s == cleanImsi) return '';
+    if (s.startsWith('89967') || s.length >= 14) return '';
+    if (s.startsWith('421') && s.length >= 14) return '';
+    if (s.length < 7 || s.length > 11) return '';
+    if (RegExp(r'^0+$').hasMatch(s)) return '';
+
     return s;
   }
 
+  static String extractFirstValidNumber(
+    List<String> candidates, {
+    String imei = '',
+    String iccid = '',
+    String imsi = '',
+  }) {
+    for (final c in candidates) {
+      final valid = normalizeModemNumber(
+        c,
+        imei: imei,
+        iccid: iccid,
+        imsi: imsi,
+      );
+      if (valid.isNotEmpty) return valid;
+    }
+    return '';
+  }
+
   String get signalQualityArabic {
+    if (!capabilities.hasSignalMetrics || signalPercent <= 0) return 'غير متاح';
     if (signalPercent >= 75) return 'ممتازة';
     if (signalPercent >= 50) return 'جيدة جداً';
     if (signalPercent >= 30) return 'متوسطة';

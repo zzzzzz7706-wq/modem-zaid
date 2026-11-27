@@ -771,8 +771,8 @@ Future<void> showSpeedLimitModal(
                     Slider(
                       value: dl,
                       min: 1,
-                      max: 100,
-                      divisions: 99,
+                      max: 150,
+                      divisions: 149,
                       activeColor: p.info,
                       onChanged: (v) => setState(() => dl = v),
                     ),

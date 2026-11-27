@@ -6,7 +6,7 @@ abstract class ModemAdapter {
   ModemFamily get family;
   String get protocolName;
 
-  Future<bool> login(String username, String password);
+  Future<LoginOutcome> loginWithOutcome(String username, String password);
   Future<void> logout();
 
   Future<ModemStatus> fetchStatus({bool forceFullRefresh = false});
@@ -34,6 +34,10 @@ abstract class ModemAdapter {
     required ConnectedDevice device,
     required bool block,
   });
+
+  Future<bool> blockMacAddress(String macAddress);
+
+  Future<bool> unblockMacAddress(String macAddress);
 
   Future<bool> renameDevice({
     required ConnectedDevice device,

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/modem_models.dart';
 import '../services/app_controller.dart';
+import '../widgets/devices_manager_sheet.dart';
 import '../widgets/wifi_quick_modal.dart';
 
 class ModemSettingsTab extends StatefulWidget {
@@ -183,15 +184,68 @@ class _ModemSettingsTabState extends State<ModemSettingsTab> {
                 padding: const EdgeInsets.all(16),
                 child: Column(
                   children: [
-                    if (s.modemPhoneNumber.isNotEmpty)
-                      _detailRow('رقم المودم (يمن فورجي)', s.modemPhoneNumber, p),
-                    _detailRow('طراز المودم', s.deviceModel, p),
-                    _detailRow('المشغل', s.operatorName, p),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 5),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'رقم خدمة يمن فورجي',
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              color: p.textSecondary,
+                            ),
+                          ),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                s.modemPhoneNumber.isNotEmpty
+                                    ? s.modemPhoneNumber
+                                    : 'غير مسجل بالشريحة',
+                                textDirection: TextDirection.ltr,
+                                style: TextStyle(
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: s.modemPhoneNumber.isNotEmpty
+                                      ? p.accentSecondary
+                                      : p.textSecondary,
+                                ),
+                              ),
+                              if (s.modemPhoneNumber.isNotEmpty) ...[
+                                const SizedBox(width: 6),
+                                InkWell(
+                                  onTap: () {
+                                    Clipboard.setData(ClipboardData(
+                                        text: s.modemPhoneNumber));
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                            'تم نسخ رقم الخدمة (${s.modemPhoneNumber})'),
+                                      ),
+                                    );
+                                  },
+                                  child: Icon(Icons.copy_rounded,
+                                      size: 16, color: p.accentSecondary),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    _detailRow('طراز المودم',
+                        s.deviceModel.isEmpty ? 'غير متاح' : s.deviceModel, p),
+                    _detailRow(
+                        'مزود الخدمة',
+                        s.operatorName.isEmpty ? 'غير متاح' : s.operatorName,
+                        p),
                     _detailRow('عنوان المودم (LAN)', s.lanIp, p),
                     _detailRow('عنوان الشبكة (WAN IP)', s.wanIp, p),
-                    _detailRow('عنوان MAC', s.macAddress, p),
-                    _detailRow('رقم IMEI', s.imei, p),
-                    _detailRow('رقم الشريحة ICCID', s.iccid, p),
+                    _detailRow('عنوان MAC للمودم', s.macAddress, p),
+                    _detailRow('الرقم التسلسلي للمودم (IMEI)', s.imei, p),
+                    _detailRow('الرقم التسلسلي للشريحة (ICCID)', s.iccid, p),
+                    _detailRow('معرف المشترك الدولي (IMSI)', s.imsi, p),
                     _detailRow('إصدار النظام', s.softwareVersion, p),
                     _detailRow('إصدار العتاد', s.hardwareVersion, p),
                     ...s.translatedExtras.entries
@@ -295,7 +349,7 @@ class _ModemSettingsTabState extends State<ModemSettingsTab> {
       ),
       const SizedBox(height: 14),
 
-      // 3. الأجهزة المتصلة (00:14)
+      // 3. إدارة الأجهزة المتصلة والسابقة والمحظورة
       Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
@@ -303,227 +357,11 @@ class _ModemSettingsTabState extends State<ModemSettingsTab> {
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: p.borderSubtle.withOpacity(0.75)),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  children: [
-                    _iconBox(Icons.devices_rounded, p.info, p),
-                    const SizedBox(width: 10),
-                    Text(
-                      'الأجهزة المتصلة (${s.devices.length})',
-                      style: TextStyle(
-                        fontSize: 15.5,
-                        fontWeight: FontWeight.w700,
-                        color: p.textPrimary,
-                      ),
-                    ),
-                  ],
-                ),
-                _editActionPill(
-                  label: 'تحديث',
-                  icon: Icons.refresh_rounded,
-                  p: p,
-                  onTap: () => widget.controller.refreshStatus(full: true),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            if (s.devices.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                child: Text(
-                  'لا توجد تفاصيل أجهزة إضافية حالياً',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: p.textSecondary),
-                ),
-              )
-            else
-              ...s.devices.map((dev) => _buildDeviceTile(context, dev, p)),
-          ],
+        child: DevicesManagerPanel(
+          controller: widget.controller,
         ),
       ),
     ];
-  }
-
-  Widget _buildDeviceTile(
-      BuildContext context, ConnectedDevice dev, dynamic p) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: p.bgElevated.withOpacity(0.65),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: dev.isBlocked ? p.danger.withOpacity(0.5) : p.borderSubtle,
-        ),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: (dev.isBlocked ? p.danger : p.accentSecondary)
-                  .withOpacity(0.14),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(
-              dev.isBlocked ? Icons.block_rounded : Icons.hub_outlined,
-              color: dev.isBlocked ? p.danger : p.accentSecondary,
-              size: 20,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        dev.name,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          color: p.textPrimary,
-                        ),
-                      ),
-                    ),
-                    if (dev.isCurrentDevice) ...[
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: p.accentSecondary.withOpacity(0.22),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          'أنت',
-                          style: TextStyle(
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w700,
-                            color: p.accentSecondary,
-                          ),
-                        ),
-                      ),
-                    ],
-                    if (dev.isBlocked) ...[
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: p.danger.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          'محظور',
-                          style: TextStyle(
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w700,
-                            color: p.danger,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  dev.connectedDuration.isNotEmpty
-                      ? '${dev.ipAddress}  •  ${dev.connectedDuration}'
-                      : '${dev.ipAddress}  •  ${dev.macAddress}',
-                  textDirection: TextDirection.ltr,
-                  style: TextStyle(fontSize: 11.5, color: p.textSecondary),
-                ),
-              ],
-            ),
-          ),
-          PopupMenuButton<String>(
-            icon: Icon(Icons.more_vert_rounded, color: p.textSecondary),
-            color: p.bgElevated,
-            onSelected: (action) async {
-              if (action == 'rename') {
-                _showRenameDeviceDialog(context, dev);
-              } else if (action == 'block') {
-                if (dev.isCurrentDevice && !dev.isBlocked) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('لا يمكن حظر هاتفك الحالي المتصل بالمودم!'),
-                    ),
-                  );
-                  return;
-                }
-                final ok = await widget.controller
-                    .toggleBlockDevice(dev, !dev.isBlocked);
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        ok
-                            ? (dev.isBlocked
-                                ? 'تم فك الحظر عن ${dev.name}'
-                                : 'تم حظر ${dev.name} فوراً')
-                            : 'تعذر تعديل حالة الحظر على هذا المودم',
-                      ),
-                    ),
-                  );
-                }
-              }
-            },
-            itemBuilder: (ctx) => [
-              const PopupMenuItem(
-                value: 'rename',
-                child: Text('تسمية الجهاز'),
-              ),
-              PopupMenuItem(
-                value: 'block',
-                child: Text(
-                  dev.isBlocked ? 'إلغاء حظر الجهاز' : 'حظر هذا الجهاز',
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showRenameDeviceDialog(BuildContext context, ConnectedDevice dev) {
-    final ctrl = TextEditingController(text: dev.name);
-    final p = widget.controller.palette;
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: p.bgCard,
-        title: Text('تسمية الجهاز', style: TextStyle(color: p.textPrimary)),
-        content: TextField(
-          controller: ctrl,
-          style: TextStyle(color: p.textPrimary),
-          decoration: const InputDecoration(hintText: 'اسم الجهاز الجديد'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('إلغاء'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              Navigator.pop(ctx);
-              await widget.controller.renameConnectedDevice(dev, ctrl.text);
-            },
-            child: const Text('حفظ'),
-          ),
-        ],
-      ),
-    );
   }
 
   // --- Sub-Tab 1: إعدادات الشبكة (00:16) ---

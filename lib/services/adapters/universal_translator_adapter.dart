@@ -1,14 +1,14 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import '../../models/modem_models.dart';
 import 'modem_adapter.dart';
 
 /// Universal Smart Translator Adapter:
-/// Connects to ANY unknown router/modem web server, authenticates via Basic,
-/// Digest, JSON API, or HTML Form POST, crawls JSON/XML/JS/HTML status pages,
-/// and translates all discovered router parameters & controls into our unified
-/// Arabic ModemStatus without ever displaying raw web pages.
+/// Connects to unknown routers/modems, authenticates via Basic/JSON/Form,
+/// crawls available endpoints, and reports ONLY real discovered parameters
+/// without fabricating unavailable metrics.
 class UniversalTranslatorAdapter implements ModemAdapter {
   @override
   final String gatewayIp;
@@ -28,7 +28,7 @@ class UniversalTranslatorAdapter implements ModemAdapter {
   UniversalTranslatorAdapter({
     required this.gatewayIp,
     required this.localClientIp,
-    this.detectedTitle = 'مودم لاسلكي ذكي',
+    this.detectedTitle = 'مودم لاسلكي',
   });
 
   @override
@@ -71,18 +71,15 @@ class UniversalTranslatorAdapter implements ModemAdapter {
     'cell_id': 'معرف البرج Cell ID',
     'operator': 'مزود الخدمة',
     'isp': 'مزود الإنترنت',
-    'cpu': 'استهلاك المعالج',
-    'memory': 'استهلاك الذاكرة',
     'dhcp': 'خادم توزيع العناوين DHCP',
     'apn': 'نقطة الوصول APN',
   };
 
   @override
-  Future<bool> login(String username, String password) async {
+  Future<LoginOutcome> loginWithOutcome(String username, String password) async {
     _username = username.trim().isEmpty ? 'admin' : username.trim();
     _password = password;
 
-    // 1. Probe root for Basic/Digest challenge or HTML form
     try {
       final res = await _client
           .get(Uri.parse('http://$gatewayIp/'))
@@ -97,10 +94,16 @@ class UniversalTranslatorAdapter implements ModemAdapter {
         final check = await _client
             .get(Uri.parse('http://$gatewayIp/'), headers: _headers)
             .timeout(const Duration(seconds: 4));
-        if (check.statusCode < 400) return true;
+        if (check.statusCode < 400) {
+          return const LoginOutcome(success: true);
+        }
+        return const LoginOutcome(
+          success: false,
+          wrongCredentials: true,
+          message: 'اسم المستخدم أو كلمة المرور غير صحيحة.',
+        );
       }
 
-      // 2. Try common JSON/CGI login endpoints across Tenda, TP-Link, OpenWrt, StarSpeed, Falcon
       final passMd5 = md5.convert(utf8.encode(_password)).toString();
       final passB64 = base64Encode(utf8.encode(_password));
 
@@ -145,21 +148,25 @@ class UniversalTranslatorAdapter implements ModemAdapter {
           final cookie = r.headers['set-cookie'];
           if (cookie != null && cookie.isNotEmpty) {
             _cookie = cookie.split(';').first;
-            return true;
+            return const LoginOutcome(success: true);
           }
           if (r.statusCode == 200 &&
               !r.body.toLowerCase().contains('error') &&
-              !r.body.toLowerCase().contains('invalid')) {
-            return true;
+              !r.body.toLowerCase().contains('invalid') &&
+              !r.body.toLowerCase().contains('wrong')) {
+            return const LoginOutcome(success: true);
           }
         } catch (_) {}
       }
 
-      // Default Basic header for subsequent scraping
       _authHeader = 'Basic ${base64Encode(utf8.encode('$_username:$_password'))}';
-      return res.statusCode < 500;
+      return LoginOutcome(success: res.statusCode < 500);
     } catch (_) {
-      return false;
+      return LoginOutcome(
+        success: false,
+        wrongCredentials: false,
+        message: 'تعذر الوصول إلى المودم ($gatewayIp).',
+      );
     }
   }
 
@@ -194,6 +201,7 @@ class UniversalTranslatorAdapter implements ModemAdapter {
 
     final combinedBuffer = StringBuffer();
     final translatedExtras = <String, String>{};
+    bool anyReached = false;
 
     for (final ep in endpoints) {
       try {
@@ -201,10 +209,10 @@ class UniversalTranslatorAdapter implements ModemAdapter {
             .get(Uri.parse('http://$gatewayIp$ep'), headers: _headers)
             .timeout(const Duration(seconds: 2));
         if (r.statusCode >= 200 && r.statusCode < 400 && r.bodyBytes.isNotEmpty) {
+          anyReached = true;
           final text = utf8.decode(r.bodyBytes, allowMalformed: true);
           combinedBuffer.writeln(text);
 
-          // Parse JSON keys if endpoint returned JSON
           if (text.trim().startsWith('{')) {
             try {
               final map = jsonDecode(text) as Map<String, dynamic>;
@@ -223,44 +231,71 @@ class UniversalTranslatorAdapter implements ModemAdapter {
       } catch (_) {}
     }
 
+    if (!anyReached) {
+      throw SocketException('انقطع الاتصال بالراوتر ($gatewayIp)');
+    }
+
     final raw = combinedBuffer.toString();
 
-    // Heuristic extraction of key modem fields across HTML/JS/XML/JSON
     final title = _extractMatch(raw, [
           RegExp(r'<title>([^<]{2,40})</title>', caseSensitive: false),
-          RegExp(r'"(?:model|device_name|product_name)"\s*:\s*"([^"]+)"', caseSensitive: false),
+          RegExp(r'"(?:model|device_name|product_name)"\s*:\s*"([^"]+)"',
+              caseSensitive: false),
         ]) ??
         detectedTitle;
 
     final ssid = _extractMatch(raw, [
           RegExp(r'"(?:ssid|SSID|SSID1|wifi_ssid)"\s*:\s*"([^"]+)"'),
           RegExp(r'<(?:ssid|SSID|WifiSsid)>([^<]+)</', caseSensitive: false),
-          RegExp(r'var\s+ssid\s*=\s*["\x27]([^"\x27]+)["\x27]', caseSensitive: false),
+          RegExp(r'var\s+ssid\s*=\s*["\x27]([^"\x27]+)["\x27]',
+              caseSensitive: false),
         ]) ??
-        'شبكة الواي فاي';
+        '';
 
     final wanIp = _extractMatch(raw, [
           RegExp(r'"(?:wan_ip|wanIp|ipv4|WanIPAddress)"\s*:\s*"([0-9\.]{7,15})"'),
-          RegExp(r'<(?:wan_ip|ipv4|WanIPAddress)>([0-9\.]{7,15})</', caseSensitive: false),
+          RegExp(r'<(?:wan_ip|ipv4|WanIPAddress)>([0-9\.]{7,15})</',
+              caseSensitive: false),
         ]) ??
         '-';
 
-    final rsrp = _extractMatch(raw, [
-          RegExp(r'"?(?:rsrp|lte_rsrp)"?\s*[:=>]\s*"?(-?\d{2,3})"?', caseSensitive: false),
-        ]);
-    final sinr = _extractMatch(raw, [
-          RegExp(r'"?(?:sinr|snr|lte_snr)"?\s*[:=>]\s*"?(-?\d{1,2})"?', caseSensitive: false),
-        ]);
-    final band = _extractMatch(raw, [
-          RegExp(r'"?(?:band|lte_band|active_band)"?\s*[:=>]\s*"?(B?\d{1,2})"?', caseSensitive: false),
+    final imei = _extractMatch(raw, [
+          RegExp(r'"?(?:imei|IMEI)"?\s*[:=>]\s*"?(\d{14,16})"?'),
         ]) ??
-        '4G';
-    final batStr = _extractMatch(raw, [
-          RegExp(r'"?(?:battery|battery_pers|BatteryPercent|Battery_voltage)"?\s*[:=>]\s*"?(\d{1,3})"?'),
-        ]);
+        '-';
+    final iccid = _extractMatch(raw, [
+          RegExp(r'"?(?:iccid|ICCID)"?\s*[:=>]\s*"?(\d{18,22})"?'),
+        ]) ??
+        '-';
+    final msisdnRaw = _extractMatch(raw, [
+          RegExp(r'"?(?:msisdn|MSISDN|mdn|phone_number)"?\s*[:=>]\s*"?(\+?\d{8,14})"?'),
+        ]) ??
+        '';
+    final modemNum = ModemStatus.extractFirstValidNumber(
+      [msisdnRaw],
+      imei: imei,
+      iccid: iccid,
+    );
 
-    // Also extract JS variable assignments `var xxx = "yyy"` into translatedExtras
-    for (final m in RegExp(r'var\s+([a-zA-Z0-9_]{3,24})\s*=\s*["\x27]([^"\x27]{1,35})["\x27]')
+    final rsrp = _extractMatch(raw, [
+      RegExp(r'"?(?:rsrp|lte_rsrp)"?\s*[:=>]\s*"?(-?\d{2,3})"?',
+          caseSensitive: false),
+    ]);
+    final sinr = _extractMatch(raw, [
+      RegExp(r'"?(?:sinr|snr|lte_snr)"?\s*[:=>]\s*"?(-?\d{1,2})"?',
+          caseSensitive: false),
+    ]);
+    final bandRaw = _extractMatch(raw, [
+      RegExp(r'"?(?:band|lte_band|active_band)"?\s*[:=>]\s*"?(B?\d{1,2})"?',
+          caseSensitive: false),
+    ]);
+    final batStr = _extractMatch(raw, [
+      RegExp(
+          r'"?(?:battery|battery_pers|BatteryPercent|Battery_voltage)"?\s*[:=>]\s*"?(\d{1,3})"?'),
+    ]);
+
+    for (final m in RegExp(
+            r'var\s+([a-zA-Z0-9_]{3,24})\s*=\s*["\x27]([^"\x27]{1,35})["\x27]')
         .allMatches(raw)
         .take(20)) {
       final k = m.group(1)!;
@@ -271,19 +306,24 @@ class UniversalTranslatorAdapter implements ModemAdapter {
     }
 
     final hasBat = batStr != null;
-    final batPct = hasBat ? (int.tryParse(batStr) ?? 100).clamp(0, 100) : 100;
+    final batPct = hasBat ? (int.tryParse(batStr) ?? 0).clamp(0, 100) : 0;
 
-    int sigPct = 80;
+    final hasSig = rsrp != null;
+    int sigPct = 0;
+    int sigBars = 0;
     if (rsrp != null) {
-      final rv = int.tryParse(rsrp) ?? -85;
+      final rv = int.tryParse(rsrp) ?? 0;
       if (rv < -40 && rv >= -140) {
         sigPct = (((rv + 122) / 47.0) * 100).round().clamp(5, 100);
+        sigBars = ((sigPct / 20).ceil()).clamp(1, 5);
       }
     }
 
-    final formattedBand = band.toUpperCase().startsWith('B') || band == '4G'
-        ? band.toUpperCase()
-        : 'B$band';
+    final formattedBand = bandRaw == null || bandRaw.isEmpty
+        ? ''
+        : (bandRaw.toUpperCase().startsWith('B')
+            ? bandRaw.toUpperCase()
+            : 'B$bandRaw');
 
     final sessionSecs = DateTime.now().difference(_sessionStart).inSeconds;
 
@@ -292,39 +332,44 @@ class UniversalTranslatorAdapter implements ModemAdapter {
       batteryPercent: batPct,
       isCharging: false,
       uptimeSeconds: sessionSecs,
-      networkType: '4G',
-      operatorName: 'متصل بالشبكة',
-      signalBars: ((sigPct / 20).ceil()).clamp(1, 5),
+      networkType: formattedBand.isNotEmpty ? '4G' : '',
+      operatorName: '',
+      signalBars: sigBars,
       signalPercent: sigPct,
       band: formattedBand,
       rsrp: rsrp != null ? '$rsrp dBm' : '-',
       sinr: sinr != null ? '$sinr dB' : '-',
-      wanConnected: true,
+      wanConnected: wanIp != '-',
+      modemPhoneNumber: modemNum,
       deviceModel: title,
       wanIp: wanIp,
       lanIp: gatewayIp,
+      imei: imei,
+      iccid: iccid,
       ssid: ssid,
-      connectedDevicesCount: 1,
+      connectedDevicesCount: localClientIp.isNotEmpty ? 1 : 0,
       adminUsername: _username,
       adminPassword: _password,
-      devices: [
-        ConnectedDevice(
-          index: 0,
-          name: 'هاتفك الحالي',
-          ipAddress: localClientIp,
-          macAddress: 'متصل عبر Wi-Fi',
-          isCurrentDevice: true,
-        ),
-      ],
+      devices: localClientIp.isNotEmpty
+          ? [
+              ConnectedDevice(
+                index: 0,
+                name: 'هاتفك الحالي',
+                ipAddress: localClientIp,
+                macAddress: 'متصل حالياً',
+                isCurrentDevice: true,
+              ),
+            ]
+          : const [],
       translatedExtras: translatedExtras,
       capabilities: ModemCapabilities(
         hasBattery: hasBat,
-        hasSignalMetrics: rsrp != null || sinr != null,
+        hasSignalMetrics: hasSig,
         hasBandLock: false,
         hasSpeedLimit: false,
-        hasWifiEdit: true,
+        hasWifiEdit: ssid.isNotEmpty,
         hasMaxClients: false,
-        hasHideSsid: true,
+        hasHideSsid: ssid.isNotEmpty,
         hasLcdQrToggle: false,
         hasDeviceBlock: false,
         hasDeviceRename: false,
@@ -390,6 +435,12 @@ class UniversalTranslatorAdapter implements ModemAdapter {
       false;
 
   @override
+  Future<bool> blockMacAddress(String macAddress) async => false;
+
+  @override
+  Future<bool> unblockMacAddress(String macAddress) async => false;
+
+  @override
   Future<bool> setDeviceBlock({
     required ConnectedDevice device,
     required bool block,
@@ -411,7 +462,12 @@ class UniversalTranslatorAdapter implements ModemAdapter {
 
   @override
   Future<bool> rebootModem() async {
-    for (final path in ['/goform/reboot', '/cgi-bin/reboot', '/api/reboot', '/reboot.cgi']) {
+    for (final path in [
+      '/goform/reboot',
+      '/cgi-bin/reboot',
+      '/api/reboot',
+      '/reboot.cgi'
+    ]) {
       try {
         final r = await _client
             .post(Uri.parse('http://$gatewayIp$path'), headers: _headers)

@@ -3,6 +3,7 @@ import '../models/modem_models.dart';
 import '../services/app_controller.dart';
 import '../theme/app_theme.dart';
 import '../widgets/balance_inquiry_sheet.dart';
+import '../widgets/devices_manager_sheet.dart';
 import '../widgets/gauges_and_cards.dart';
 import '../widgets/wifi_quick_modal.dart';
 import 'diagnostics_tab.dart';
@@ -346,21 +347,65 @@ class _MainShellState extends State<MainShell> {
           ),
         ),
       ),
-      body: IndexedStack(
-        index: _tabIndex,
+      body: Column(
         children: [
-          HomeTab(
-            controller: c,
-            onJumpToDevices: () => setState(() => _tabIndex = 1),
-            onOpenSms: _openSmsInboxSheet,
+          if (c.isConnectionLost)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: p.warning.withOpacity(0.16),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: p.warning.withOpacity(0.55)),
+              ),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: p.warning,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      c.freshnessStatusArabic,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        color: p.warning,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => c.refreshStatus(full: true),
+                    child: const Text('اتصال الآن'),
+                  ),
+                ],
+              ),
+            ),
+          Expanded(
+            child: IndexedStack(
+              index: _tabIndex,
+              children: [
+                HomeTab(
+                  controller: c,
+                  onJumpToDevices: () => showDevicesManagerSheet(context, c),
+                  onOpenSms: _openSmsInboxSheet,
+                ),
+                ModemSettingsTab(controller: c),
+                DiagnosticsTab(controller: c),
+              ],
+            ),
           ),
-          ModemSettingsTab(controller: c),
-          DiagnosticsTab(controller: c),
         ],
       ),
       bottomNavigationBar: FloatingGlassBottomNav(
         currentIndex: _tabIndex,
-        networkBadge: s.networkType,
+        networkBadge: s.networkType.isEmpty ? '4G' : s.networkType,
         onTabSelected: (idx) => setState(() => _tabIndex = idx),
         on4GPressed: () => showBandLockModal(context, c),
         palette: p,

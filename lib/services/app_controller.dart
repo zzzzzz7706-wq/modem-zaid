@@ -14,7 +14,7 @@ class AppController extends ChangeNotifier {
 
   ModemIdentity _identity = const ModemIdentity(
     gatewayIp: '192.168.43.1',
-    localClientIp: '192.168.43.200',
+    localClientIp: '',
     modelName: 'جاري الفحص...',
     protocolLabel: 'فحص الشبكة',
     family: ModemFamily.notionMifi,
@@ -37,6 +37,14 @@ class AppController extends ChangeNotifier {
 
   bool _isBusyAction = false;
   bool get isBusyAction => _isBusyAction;
+
+  bool _isConnectionLost = false;
+  bool get isConnectionLost => _isConnectionLost;
+
+  DateTime? _lastUpdatedAt;
+  DateTime? get lastUpdatedAt => _lastUpdatedAt;
+
+  int _consecutivePollFailures = 0;
 
   String? _lastError;
   String? get lastError => _lastError;
@@ -64,7 +72,7 @@ class AppController extends ChangeNotifier {
     ShortcutItemConfig(id: 'reboot', title: 'إعادة تشغيل المودم', enabled: true),
     ShortcutItemConfig(id: 'speed', title: 'تحديد السرعة', enabled: true),
     ShortcutItemConfig(id: 'admin_pass', title: 'كلمة مرور المدير', enabled: true),
-    ShortcutItemConfig(id: 'devices', title: 'حماية المتصلين', enabled: true),
+    ShortcutItemConfig(id: 'devices', title: 'إدارة وحظر الأجهزة', enabled: true),
     ShortcutItemConfig(id: 'power_off', title: 'إيقاف التشغيل', enabled: true),
     ShortcutItemConfig(id: 'band_lock', title: 'تثبيت الترددات', enabled: true),
     ShortcutItemConfig(id: 'wifi_qr', title: 'باركود الواي فاي', enabled: true),
@@ -75,6 +83,17 @@ class AppController extends ChangeNotifier {
   Timer? _pollTimer;
   Timer? _clockTimer;
   bool _lowBatteryNotified = false;
+  bool _pollInFlight = false;
+
+  String get freshnessStatusArabic {
+    if (_isConnectionLost) {
+      return 'انقطع الاتصال بالمودم — البيانات المعروضة آخر قراءة مسجلة، جاري إعادة الاتصال...';
+    }
+    if (_lastUpdatedAt == null) return 'جاري التحديث...';
+    final diff = DateTime.now().difference(_lastUpdatedAt!).inSeconds;
+    if (diff <= 6) return 'مباشر • متصل بالمودم الآن';
+    return 'آخر تحديث قبل $diff ثانية';
+  }
 
   Future<void> initialize() async {
     final prefs = await SharedPreferences.getInstance();
@@ -152,7 +171,7 @@ class AppController extends ChangeNotifier {
       );
       _identity = result.identity;
       _adapter = result.adapter;
-    } catch (e) {
+    } catch (_) {
       _lastError = 'تعذر فحص الشبكة اللاسلكية';
     } finally {
       _isDetecting = false;
@@ -166,22 +185,20 @@ class AppController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      if (_adapter == null || !_identity.reachable) {
-        await detectModem();
-      }
+      // Always refresh local Wi-Fi binding in case user toggled Wi-Fi or Mobile Data
+      await detectModem();
+
       if (_adapter == null || !_identity.reachable) {
         _lastError =
-            'تأكد من اتصال الهاتف بشبكة الواي فاي الخاصة بالمودم (${_identity.gatewayIp}) أو جرب الوضع التجريبي.';
-        _isLoggingIn = false;
-        notifyListeners();
+            'تعذر العثور على مودم متصل عبر الواي فاي (${_identity.gatewayIp}). تأكد من الاتصال بشبكة الواي فاي الخاصة بالمودم.';
         return false;
       }
 
-      final ok = await _adapter!.login(username, password);
-      if (!ok) {
-        _lastError = 'اسم المستخدم أو كلمة المرور غير صحيحة، أو رفض المودم الاتصال.';
-        _isLoggingIn = false;
-        notifyListeners();
+      final outcome = await _adapter!.loginWithOutcome(username, password);
+      if (!outcome.success) {
+        _lastError = outcome.message.isNotEmpty
+            ? outcome.message
+            : 'تعذر تسجيل الدخول إلى المودم.';
         return false;
       }
 
@@ -192,15 +209,20 @@ class AppController extends ChangeNotifier {
       await prefs.setString('saved_password', _savedPassword);
 
       _status = await _adapter!.fetchStatus(forceFullRefresh: false);
+      _lastUpdatedAt = DateTime.now();
+      _isConnectionLost = false;
+      _consecutivePollFailures = 0;
       await _recordDetectedModemNumber(_status.modemPhoneNumber);
       _evaluateAlerts(_status);
       _isAuthenticated = true;
       _startLivePolling();
-      // Load secondary details asynchronously right after instant portal entry
+
+      // Load complete device list, MAC blacklist, and secondary settings immediately after entry
       Future.microtask(() => refreshStatus(silent: true, full: true));
       return true;
-    } catch (e) {
-      _lastError = 'حدث خطأ أثناء الاتصال بالمودم: ${_identity.gatewayIp}';
+    } catch (_) {
+      _lastError =
+          'تعذر إكمال قراءة بيانات المودم (${_identity.gatewayIp}). يرجى المحاولة مرة أخرى.';
       return false;
     } finally {
       _isLoggingIn = false;
@@ -246,8 +268,11 @@ class AppController extends ChangeNotifier {
     final demo = ModemDetector.createDemoMode();
     _identity = demo.identity;
     _adapter = demo.adapter;
-    await _adapter!.login('admin', 'admin');
+    await _adapter!.loginWithOutcome('admin', 'admin');
     _status = await _adapter!.fetchStatus(forceFullRefresh: true);
+    _lastUpdatedAt = DateTime.now();
+    _isConnectionLost = false;
+    _consecutivePollFailures = 0;
     await _recordDetectedModemNumber(_status.modemPhoneNumber);
     _evaluateAlerts(_status);
     _isAuthenticated = true;
@@ -262,6 +287,8 @@ class AppController extends ChangeNotifier {
       await _adapter?.logout();
     } catch (_) {}
     _isAuthenticated = false;
+    _isConnectionLost = false;
+    _consecutivePollFailures = 0;
     _lowBatteryNotified = false;
     notifyListeners();
     await detectModem();
@@ -270,63 +297,16 @@ class AppController extends ChangeNotifier {
   void _startLivePolling() {
     _stopLivePolling();
     _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      refreshStatus(silent: true);
+      if (!_pollInFlight && !_isBusyAction) {
+        refreshStatus(silent: true);
+      }
     });
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_isAuthenticated && _status.uptimeSeconds > 0) {
-        _status = ModemStatus(
-          hasBattery: _status.hasBattery,
-          batteryPercent: _status.batteryPercent,
-          isCharging: _status.isCharging,
-          rxBytes: _status.rxBytes,
-          txBytes: _status.txBytes,
-          totalBytes: _status.totalBytes,
-          rxRateBps: _status.rxRateBps,
-          txRateBps: _status.txRateBps,
-          uptimeSeconds: _status.uptimeSeconds + 1,
-          networkType: _status.networkType,
-          operatorName: _status.operatorName,
-          signalBars: _status.signalBars,
-          signalPercent: _status.signalPercent,
-          band: _status.band,
-          rsrp: _status.rsrp,
-          rsrq: _status.rsrq,
-          sinr: _status.sinr,
-          rssi: _status.rssi,
-          pci: _status.pci,
-          cellId: _status.cellId,
-          wanConnected: _status.wanConnected,
-          modemPhoneNumber: _status.modemPhoneNumber,
-          deviceModel: _status.deviceModel,
-          wanIp: _status.wanIp,
-          lanIp: _status.lanIp,
-          macAddress: _status.macAddress,
-          imei: _status.imei,
-          iccid: _status.iccid,
-          imsi: _status.imsi,
-          softwareVersion: _status.softwareVersion,
-          hardwareVersion: _status.hardwareVersion,
-          ssid: _status.ssid,
-          wifiPassword: _status.wifiPassword,
-          isHiddenSsid: _status.isHiddenSsid,
-          securityMode: _status.securityMode,
-          cipherMode: _status.cipherMode,
-          maxClients: _status.maxClients,
-          connectedDevicesCount: _status.connectedDevicesCount,
-          lcdQrEnabled: _status.lcdQrEnabled,
-          isManualBand: _status.isManualBand,
-          networkMode: _status.networkMode,
-          selectedBands: _status.selectedBands,
-          supportedBands: _status.supportedBands,
-          speedLimitEnabled: _status.speedLimitEnabled,
-          downloadLimitMbps: _status.downloadLimitMbps,
-          uploadLimitMbps: _status.uploadLimitMbps,
-          adminUsername: _status.adminUsername,
-          adminPassword: _status.adminPassword,
-          devices: _status.devices,
-          translatedExtras: _status.translatedExtras,
-          capabilities: _status.capabilities,
-        );
+      // Never advance clock on stale/disconnected data
+      if (_isAuthenticated &&
+          !_isConnectionLost &&
+          _status.uptimeSeconds > 0) {
+        _status = _status.copyWithUptime(_status.uptimeSeconds + 1);
         notifyListeners();
       }
     });
@@ -341,19 +321,49 @@ class AppController extends ChangeNotifier {
 
   Future<void> refreshStatus({bool silent = false, bool full = false}) async {
     if (_adapter == null) return;
+    _pollInFlight = true;
     if (!silent) {
       _isBusyAction = true;
       notifyListeners();
     }
     try {
+      if (_isConnectionLost && _identity.family != ModemFamily.demo) {
+        // Attempt automatic gateway re-discovery & re-authentication
+        final det = await ModemDetector.autoDetect(
+          preferredIp: _customGatewayIp.isEmpty ? null : _customGatewayIp,
+        );
+        if (det.identity.reachable) {
+          _identity = det.identity;
+          _adapter = det.adapter;
+          final reauth =
+              await _adapter!.loginWithOutcome(_savedUsername, _savedPassword);
+          if (!reauth.success) {
+            throw const SocketException('Re-auth pending');
+          }
+        }
+      }
+
       final next = await _adapter!.fetchStatus(forceFullRefresh: full);
       _status = next;
+      _lastUpdatedAt = DateTime.now();
+      if (_isConnectionLost) {
+        _isConnectionLost = false;
+        _addAlert('تمت استعادة الاتصال المباشر بالمودم (${_identity.gatewayIp}).');
+      }
+      _consecutivePollFailures = 0;
+
       if (next.modemPhoneNumber.isNotEmpty &&
           next.modemPhoneNumber != _lastModemNumber) {
         await _recordDetectedModemNumber(next.modemPhoneNumber);
       }
       _evaluateAlerts(next);
-    } catch (_) {} finally {
+    } catch (_) {
+      _consecutivePollFailures++;
+      if (_consecutivePollFailures >= 2) {
+        _isConnectionLost = true;
+      }
+    } finally {
+      _pollInFlight = false;
       if (!silent) {
         _isBusyAction = false;
       }
@@ -362,9 +372,13 @@ class AppController extends ChangeNotifier {
   }
 
   void _evaluateAlerts(ModemStatus s) {
-    if (s.hasBattery && s.batteryPercent <= 15 && !s.isCharging && !_lowBatteryNotified) {
+    if (s.hasBattery &&
+        s.batteryPercent <= 15 &&
+        !s.isCharging &&
+        !_lowBatteryNotified) {
       _lowBatteryNotified = true;
-      _addAlert('بطارية المودم منخفضة (${s.batteryPercent}%) — يُنصح بتوصيل الشاحن.');
+      _addAlert(
+          'بطارية المودم منخفضة (${s.batteryPercent}%) — يُنصح بتوصيل الشاحن.');
     }
   }
 
@@ -380,7 +394,112 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // --- Modem Control Actions ---
+  // --- Verified Modem Control Actions ---
+
+  static String? normalizeMacInput(String input) {
+    final cleaned = input
+        .trim()
+        .toUpperCase()
+        .replaceAll('-', ':')
+        .replaceAll(' ', '');
+    if (RegExp(r'^([0-9A-F]{2}:){5}[0-9A-F]{2}$').hasMatch(cleaned)) {
+      return cleaned;
+    }
+    return null;
+  }
+
+  Future<(bool, String)> toggleBlockDevice(
+      ConnectedDevice device, bool block) async {
+    if (_adapter == null) return (false, 'لا يوجد اتصال بالمودم.');
+    if (block && device.isCurrentDevice) {
+      return (false, 'لا يمكن حظر هاتفك الحالي المتصل بالمودم.');
+    }
+    if (!_status.capabilities.hasDeviceBlock) {
+      return (false, 'هذا الطراز من المودم لا يدعم حظر الأجهزة عبر البروتوكول الحالي.');
+    }
+
+    _isBusyAction = true;
+    notifyListeners();
+    try {
+      final verified =
+          await _adapter!.setDeviceBlock(device: device, block: block);
+      if (verified) {
+        await refreshStatus(silent: true, full: true);
+        final msg = block
+            ? 'تم تنفيذ وتأكيد حظر الجهاز (${device.name} • ${device.macAddress}) من المودم فعلياً.'
+            : 'تم فك الحظر عن الجهاز (${device.name} • ${device.macAddress}) وتأكيده من المودم.';
+        _addAlert(msg);
+        return (true, msg);
+      }
+      return (
+        false,
+        block
+            ? 'لم يؤكد المودم إضافة الجهاز لقائمة الحظر — حاول مرة أخرى.'
+            : 'لم يؤكد المودم إزالة الجهاز من قائمة الحظر — حاول مرة أخرى.'
+      );
+    } catch (_) {
+      return (false, 'حدث خطأ أثناء إرسال أمر الحظر إلى المودم.');
+    } finally {
+      _isBusyAction = false;
+      notifyListeners();
+    }
+  }
+
+  Future<(bool, String)> blockByMacAddress(String rawMac) async {
+    if (_adapter == null) return (false, 'لا يوجد اتصال بالمودم.');
+    final normMac = normalizeMacInput(rawMac);
+    if (normMac == null) {
+      return (
+        false,
+        'صيغة عنوان MAC غير صحيحة. يرجى كتابته بالصيغة: AA:BB:CC:DD:EE:FF'
+      );
+    }
+    if (_status.currentDeviceMac.isNotEmpty &&
+        normMac == _status.currentDeviceMac.toUpperCase()) {
+      return (false, 'لا يمكنك حظر عنوان MAC الخاص بهاتفك الحالي!');
+    }
+
+    _isBusyAction = true;
+    notifyListeners();
+    try {
+      final verified = await _adapter!.blockMacAddress(normMac);
+      if (verified) {
+        await refreshStatus(silent: true, full: true);
+        final msg = 'تم حظر العنوان ($normMac) وتأكيد إضافته لقائمة الحظر في المودم.';
+        _addAlert(msg);
+        return (true, msg);
+      }
+      return (
+        false,
+        'تعذر تأكيد حظر العنوان ($normMac) من المودم (الحد الأقصى 10 عناوين أو رفض المودم العملية).'
+      );
+    } finally {
+      _isBusyAction = false;
+      notifyListeners();
+    }
+  }
+
+  Future<(bool, String)> unblockByMacAddress(String rawMac) async {
+    if (_adapter == null) return (false, 'لا يوجد اتصال بالمودم.');
+    final normMac = normalizeMacInput(rawMac);
+    if (normMac == null) return (false, 'عنوان MAC غير صالح.');
+
+    _isBusyAction = true;
+    notifyListeners();
+    try {
+      final verified = await _adapter!.unblockMacAddress(normMac);
+      if (verified) {
+        await refreshStatus(silent: true, full: true);
+        final msg = 'تم إلغاء حظر العنوان ($normMac) وتأكيده من المودم بنجاح.';
+        _addAlert(msg);
+        return (true, msg);
+      }
+      return (false, 'تعذر تأكيد إزالة الحظر من المودم.');
+    } finally {
+      _isBusyAction = false;
+      notifyListeners();
+    }
+  }
 
   Future<bool> saveWifiSettings({
     required String ssid,
@@ -400,7 +519,6 @@ class AppController extends ChangeNotifier {
       );
       if (ok) {
         _addAlert('تم تحديث إعدادات الواي فاي ($ssid) بنجاح.');
-        await Future.delayed(const Duration(milliseconds: 600));
         await refreshStatus(silent: true, full: true);
       }
       return ok;
@@ -426,8 +544,7 @@ class AppController extends ChangeNotifier {
       );
       if (ok) {
         final desc = manualMode ? bands.join(', ') : 'تلقائي';
-        _addAlert('تم تحديث ترددات الأبراج ($desc).');
-        await Future.delayed(const Duration(seconds: 1));
+        _addAlert('تم تثبيت ترددات الأبراج ($desc) وتأكيدها من المودم.');
         await refreshStatus(silent: true, full: true);
       }
       return ok;
@@ -455,25 +572,6 @@ class AppController extends ChangeNotifier {
         _addAlert(enabled
             ? 'تم تفعيل تحديد السرعة (${downloadMbps}M تنزيل / ${uploadMbps}M رفع).'
             : 'تم إيقاف تحديد السرعة.');
-        await refreshStatus(silent: true, full: true);
-      }
-      return ok;
-    } finally {
-      _isBusyAction = false;
-      notifyListeners();
-    }
-  }
-
-  Future<bool> toggleBlockDevice(ConnectedDevice device, bool block) async {
-    if (_adapter == null) return false;
-    _isBusyAction = true;
-    notifyListeners();
-    try {
-      final ok = await _adapter!.setDeviceBlock(device: device, block: block);
-      if (ok) {
-        _addAlert(block
-            ? 'تم حظر الجهاز (${device.name}) من الشبكة.'
-            : 'تم إلغاء حظر الجهاز (${device.name}).');
         await refreshStatus(silent: true, full: true);
       }
       return ok;
@@ -527,7 +625,7 @@ class AppController extends ChangeNotifier {
         _savedPassword = newPassword;
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('saved_password', newPassword);
-        _addAlert('تم تغيير كلمة مرور مدير المودم بنجاح.');
+        _addAlert('تم تغيير كلمة مرور مدير المودم وتأكيدها بنجاح.');
         await refreshStatus(silent: true, full: true);
       }
       return ok;
@@ -541,7 +639,9 @@ class AppController extends ChangeNotifier {
     if (_adapter == null) return false;
     final ok = await _adapter!.rebootModem();
     if (ok) {
-      _addAlert('جاري إعادة تشغيل المودم...');
+      _isConnectionLost = true;
+      _addAlert('جاري إعادة تشغيل المودم... سيتم إعادة الاتصال تلقائياً عند جهوزيته.');
+      notifyListeners();
     }
     return ok;
   }
@@ -550,7 +650,9 @@ class AppController extends ChangeNotifier {
     if (_adapter == null) return false;
     final ok = await _adapter!.powerOffModem();
     if (ok) {
-      _addAlert('تم إرسال أمر إيقاف تشغيل المودم.');
+      _isConnectionLost = true;
+      _addAlert('تم إرسال أمر إيقاف تشغيل المودم بنجاح.');
+      notifyListeners();
     }
     return ok;
   }
@@ -560,15 +662,22 @@ class AppController extends ChangeNotifier {
     return _adapter!.fetchSmsInbox();
   }
 
-  /// Measures TCP handshake latency in ms (works on unrooted Android 10-15).
   Future<int?> measureTcpPing(String host, int port) async {
     final sw = Stopwatch()..start();
     try {
-      final socket = await Socket.connect(
-        host,
-        port,
-        timeout: const Duration(milliseconds: 2500),
-      );
+      final isGateway = host == _identity.gatewayIp;
+      final socket = isGateway
+          ? await ModemDetector.connectLanSocket(
+              host,
+              port,
+              localIp: _identity.localClientIp,
+              timeout: const Duration(milliseconds: 2500),
+            )
+          : await Socket.connect(
+              host,
+              port,
+              timeout: const Duration(milliseconds: 2500),
+            );
       sw.stop();
       socket.destroy();
       return sw.elapsedMilliseconds;

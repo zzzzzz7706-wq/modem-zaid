@@ -133,23 +133,22 @@ jobs:
       - name: Build Ultra-Slim Split-ABI Release APKs
         run: |
           flutter build apk --release --split-per-abi --tree-shake-icons --obfuscate --split-debug-info=/tmp/symbols
-          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ModemZaid-arm64-v1.1.0.apk
-          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ModemZaid-arm32-v1.1.0.apk
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ModemZaid-arm64-v1.2.0.apk
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ModemZaid-arm32-v1.2.0.apk
           ls -lh ModemZaid-arm*.apk
 
       - name: Publish Slim APKs to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.1.0
-          name: "مودم زيد v1.1.0 — واجهة مطورة ودخول مستقر وخفيف"
+          tag_name: v1.2.0
+          name: "مودم زيد v1.2.0 — إدارة وحظر الأجهزة الفعلي ودعم بيانات الهاتف مع الواي فاي"
           body: |
-            إصدار **مودم زيد v1.1.0 (Modem Zaid)** المبني بـ Flutter (بحجم مضغوط خفيف ~8.6 ميجابايت فقط):
-            - حل نهائي لمشكلة رفض الاتصال المتقطع في مودمات `L818A` وفورتكس وسام عبر محرك اتصالات مباشر متسلسل.
-            - إظهار **رقم المودم (يمن فورجي)** تلقائياً في الرئيسية ومعلومات الجهاز مع النسخ السريع والربط المباشر باستعلام الرصيد.
-            - واجهة مطورة بالكامل مع أنيميشن موجات وانتقال سلس عند الدخول بدون أي إشارة لاسم مودميا.
-            - **ModemZaid-arm64-v1.1.0.apk**: النسخة المخصصة لمعظم الهواتف الحديثة (64-بت).
-            - **ModemZaid-arm32-v1.1.0.apk**: للهواتف القديمة (32-بت).
+            إصدار **مودم زيد v1.2.0 (Modem Zaid)** المبني بـ Flutter (بحجم خفيف مضغوط ~8.6 ميجابايت فقط):
+            - ربط مباشر بواجهة الواي فاي `wlan0` ليعمل الدخول والتحكم حتى عند تشغيل بيانات الهاتف (4G SIM) مع الواي فاي في نفس الوقت، مع تمييز دقيق لرسائل الخطأ.
+            - استخراج وعرض **رقم خدمة يمن فورجي** بوضوح مع النسخ السريع والفصل الصارم عن `IMEI` و `ICCID` و `IMSI`.
+            - لوحة متكاملة لإدارة **الأجهزة المتصلة حالياً، والأجهزة السابقة، والأجهزة المحظورة** مع الحظر اليدوي عبر `MAC Address` والتحقق الفعلي من تنفيذ الحظر وفك الحظر داخل المودم.
+            - دقة بيانات حقيقية 100% دون تقدير، مع مؤشر اتصال حي وإعادة اتصال تلقائية عند انقطاع المودم.
           files: |
-            ModemZaid-arm64-v1.1.0.apk
-            ModemZaid-arm32-v1.1.0.apk
+            ModemZaid-arm64-v1.2.0.apk
+            ModemZaid-arm32-v1.2.0.apk
           make_latest: true

@@ -434,7 +434,7 @@ class UniversalTranslatorAdapter implements ModemAdapter {
       imei: imei,
       iccid: iccid,
       imsi: imsi,
-      firmwareVersion: (info['SwVersion'] ?? '-').toString(),
+      softwareVersion: (info['SwVersion'] ?? '-').toString(),
       hardwareVersion: (info['HwVersion'] ?? '-').toString(),
       ssid: ssid,
       wifiPassword: wifiKey,

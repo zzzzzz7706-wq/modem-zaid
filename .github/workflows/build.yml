@@ -1,0 +1,140 @@
+name: Build Modem Zaid APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Bundle Offline Cairo Fonts & Prepare Android Platform
+        run: |
+          mkdir -p assets/fonts
+          curl -fsSL "https://raw.githubusercontent.com/google/fonts/main/ofl/cairo/Cairo%5Bslnt%2Cwght%5D.ttf" -o /tmp/Cairo-VF.ttf
+          python3 -m pip install --quiet fonttools pillow
+
+          python3 - << 'PYEOF'
+          from fontTools.ttLib import TTFont
+          from fontTools.varLib.instancer import instantiateVariableFont
+
+          for w, name in [(400, "Cairo-Regular.ttf"), (600, "Cairo-SemiBold.ttf"), (700, "Cairo-Bold.ttf")]:
+              vf = TTFont("/tmp/Cairo-VF.ttf")
+              inst = instantiateVariableFont(vf, {"wght": w, "slnt": 0})
+              inst.save(f"assets/fonts/{name}")
+          print("Instantiated static Cairo fonts successfully")
+          PYEOF
+
+          mkdir -p /tmp/backup
+          cp -r lib assets pubspec.yaml analysis_options.yaml /tmp/backup/
+          flutter create --platforms=android --org com.modemzaid --project-name modem_zaid .
+          rm -rf lib test
+          cp -r /tmp/backup/lib .
+          cp -r /tmp/backup/assets .
+          cp /tmp/backup/pubspec.yaml .
+          cp /tmp/backup/analysis_options.yaml .
+
+          python3 - << 'PYEOF'
+          import glob, os, re, shutil
+          from PIL import Image
+
+          manifest_path = "android/app/src/main/AndroidManifest.xml"
+          with open(manifest_path, "r", encoding="utf-8") as f:
+              xml = f.read()
+
+          perms = (
+              '    <uses-permission android:name="android.permission.INTERNET"/>\n'
+              '    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n'
+              '    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>\n'
+              '    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n'
+              '    <uses-permission android:name="android.permission.USE_FINGERPRINT"/>\n'
+          )
+          if "android.permission.INTERNET" not in xml:
+              xml = xml.replace("<application", perms + "    <application", 1)
+
+          xml = re.sub(r'android:label="[^"]*"', 'android:label="مودم زيد"', xml)
+          if "usesCleartextTraffic" not in xml:
+              xml = xml.replace(
+                  "<application",
+                  '<application\n        android:usesCleartextTraffic="true"',
+                  1,
+              )
+
+          with open(manifest_path, "w", encoding="utf-8") as f:
+              f.write(xml)
+          print("Updated AndroidManifest.xml successfully")
+
+          kt_files = glob.glob("android/app/src/main/kotlin/**/MainActivity.kt", recursive=True)
+          for kt in kt_files:
+              with open(kt, "r", encoding="utf-8") as f:
+                  code = f.read()
+              code = code.replace("FlutterActivity", "FlutterFragmentActivity")
+              with open(kt, "w", encoding="utf-8") as f:
+                  f.write(code)
+              print("Updated", kt)
+
+          # Generate all Android mipmap launcher icons directly using Pillow
+          src_icon = Image.open("assets/icon/app_icon.png").convert("RGBA")
+          sizes = {
+              "mipmap-mdpi": 48,
+              "mipmap-hdpi": 72,
+              "mipmap-xhdpi": 96,
+              "mipmap-xxhdpi": 144,
+              "mipmap-xxxhdpi": 192,
+          }
+          res_dir = "android/app/src/main/res"
+          shutil.rmtree(os.path.join(res_dir, "mipmap-anydpi-v26"), ignore_errors=True)
+          for folder, px in sizes.items():
+              out_dir = os.path.join(res_dir, folder)
+              os.makedirs(out_dir, exist_ok=True)
+              src_icon.resize((px, px), Image.Resampling.LANCZOS).save(
+                  os.path.join(out_dir, "ic_launcher.png")
+              )
+          print("Generated all mipmap launcher icons")
+          PYEOF
+
+      - name: Install Flutter Dependencies
+        run: flutter pub get
+
+      - name: Run Static Analysis
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Build Release APK
+        run: |
+          flutter build apk --release
+          cp build/app/outputs/flutter-apk/app-release.apk ModemZaid-v1.0.0.apk
+
+      - name: Upload Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ModemZaid-APK
+          path: ModemZaid-v1.0.0.apk
+
+      - name: Publish GitHub Release APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: "مودم زيد v1.0.0 (Modem Zaid APK)"
+          body: |
+            تطبيق **مودم زيد (Modem Zaid)** المبني بـ Flutter لإدارة وترجمة واجهات ومميزات جميع مودمات يمن فورجي والراوترات تلقائياً باللغة العربية.
+          files: ModemZaid-v1.0.0.apk
+          make_latest: true

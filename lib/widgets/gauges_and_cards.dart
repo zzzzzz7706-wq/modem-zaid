@@ -3,19 +3,24 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
-/// Organic curved top wave matching the Modmia login screen (00:00)
+/// Smooth animated organic top wave for Login Screen
 class LoginWaveClipper extends CustomClipper<Path> {
+  final double phase;
+
+  const LoginWaveClipper({this.phase = 0.0});
+
   @override
   Path getClip(Size size) {
+    final shift = math.sin(phase * math.pi * 2) * 14.0;
     final path = Path();
-    path.lineTo(0, size.height * 0.62);
+    path.lineTo(0, size.height * 0.64 + shift * 0.5);
     path.cubicTo(
       size.width * 0.28,
-      size.height * 0.42,
-      size.width * 0.58,
-      size.height * 1.05,
+      size.height * 0.40 - shift,
+      size.width * 0.62,
+      size.height * 1.04 + shift,
       size.width,
-      size.height * 0.72,
+      size.height * 0.70 - shift * 0.4,
     );
     path.lineTo(size.width, 0);
     path.close();
@@ -23,10 +28,11 @@ class LoginWaveClipper extends CustomClipper<Path> {
   }
 
   @override
-  bool shouldReclip(covariant CustomClipper<Path> oldClipper) => false;
+  bool shouldReclip(covariant LoginWaveClipper oldClipper) =>
+      oldClipper.phase != phase;
 }
 
-/// Circular battery arc gauge matching the top-right card (00:04)
+/// Circular battery arc gauge with smooth animated sweep
 class BatteryRingGauge extends StatelessWidget {
   final int percent;
   final bool hasBattery;
@@ -56,16 +62,26 @@ class BatteryRingGauge extends StatelessWidget {
       ringColor = palette.success;
     }
 
+    final targetProgress = hasBattery ? (percent.clamp(0, 100) / 100.0) : 1.0;
+
     return SizedBox(
       width: 102,
       height: 102,
-      child: CustomPaint(
-        painter: _ArcRingPainter(
-          progress: hasBattery ? (percent.clamp(0, 100) / 100.0) : 1.0,
-          activeColor: ringColor,
-          trackColor: palette.bgElevated,
-          strokeWidth: 9.5,
-        ),
+      child: TweenAnimationBuilder<double>(
+        tween: Tween<double>(begin: 0, end: targetProgress),
+        duration: const Duration(milliseconds: 850),
+        curve: Curves.easeOutCubic,
+        builder: (context, animVal, child) {
+          return CustomPaint(
+            painter: _ArcRingPainter(
+              progress: animVal,
+              activeColor: ringColor,
+              trackColor: palette.bgElevated,
+              strokeWidth: 9.5,
+            ),
+            child: child,
+          );
+        },
         child: Center(
           child: hasBattery
               ? Text(
@@ -73,7 +89,7 @@ class BatteryRingGauge extends StatelessWidget {
                   textDirection: TextDirection.ltr,
                   style: TextStyle(
                     fontSize: 22,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w800,
                     color: palette.textPrimary,
                   ),
                 )

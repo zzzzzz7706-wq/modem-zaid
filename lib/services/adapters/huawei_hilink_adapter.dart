@@ -245,6 +245,8 @@ class HuaweiHilinkAdapter implements ModemAdapter {
       pci: pci.isEmpty ? '-' : pci,
       cellId: cellId.isEmpty ? '-' : cellId,
       wanConnected: _findTag(monDoc, 'ConnectionStatus') == '901',
+      modemPhoneNumber:
+          ModemStatus.normalizeModemNumber(_findTag(infoDoc, 'Msisdn')),
       deviceModel: _findTag(infoDoc, 'DeviceName').isEmpty
           ? modelHint
           : _findTag(infoDoc, 'DeviceName'),

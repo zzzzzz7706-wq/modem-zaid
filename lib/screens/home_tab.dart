@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/modem_models.dart';
 import '../services/app_controller.dart';
+import '../widgets/balance_inquiry_sheet.dart';
 import '../widgets/gauges_and_cards.dart';
 import '../widgets/wifi_quick_modal.dart';
 
@@ -16,6 +18,123 @@ class HomeTab extends StatelessWidget {
     required this.onOpenSms,
   });
 
+  Widget _buildModemHeroBanner(BuildContext context, ModemStatus s, dynamic p) {
+    final modemNum = s.modemPhoneNumber.isNotEmpty
+        ? s.modemPhoneNumber
+        : controller.lastModemNumber;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 13),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            p.accentPrimary.withOpacity(0.18),
+            p.bgCard,
+          ],
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
+        ),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: p.accentPrimary.withOpacity(0.42)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: p.accentPrimary.withOpacity(0.18),
+              border: Border.all(color: p.accentPrimary.withOpacity(0.45)),
+            ),
+            child: Icon(
+              Icons.sim_card_rounded,
+              color: p.accentPrimary,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${s.deviceModel} • ${s.operatorName}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    color: p.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    Text(
+                      'رقم المودم: ',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: p.textPrimary,
+                      ),
+                    ),
+                    Flexible(
+                      child: Text(
+                        modemNum.isNotEmpty ? modemNum : 'غير مسجل بالشريحة',
+                        textDirection: TextDirection.ltr,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800,
+                          color: modemNum.isNotEmpty
+                              ? p.accentSecondary
+                              : p.textSecondary,
+                          letterSpacing: 0.6,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          if (modemNum.isNotEmpty)
+            IconButton(
+              tooltip: 'نسخ رقم المودم',
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: modemNum));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('تم نسخ رقم المودم ($modemNum)')),
+                );
+              },
+              icon: Icon(Icons.copy_rounded, size: 19, color: p.textPrimary),
+            ),
+          InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () => showBalanceInquirySheet(context, controller),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+              decoration: BoxDecoration(
+                color: p.accentPrimary,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Text(
+                'الرصيد',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final p = controller.palette;
@@ -28,8 +147,11 @@ class HomeTab extends StatelessWidget {
       backgroundColor: p.bgCard,
       onRefresh: () => controller.refreshStatus(full: true),
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 105),
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 105),
         children: [
+          // Hero Banner: رقم المودم + فحص الرصيد
+          _buildModemHeroBanner(context, s, p),
+
           // Row 1: البطارية (Right) + استهلاك البيانات (Left)
           Row(
             children: [

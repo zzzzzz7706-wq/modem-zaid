@@ -157,6 +157,8 @@ class ZteGoformAdapter implements ModemAdapter {
       'imei',
       'sim_iccid',
       'sim_imsi',
+      'msisdn',
+      'LocalNumber',
       'wa_inner_version',
       'hardware_version',
       'model_name',
@@ -255,6 +257,9 @@ class ZteGoformAdapter implements ModemAdapter {
       cellId: (data['cell_id'] ?? '-').toString(),
       wanConnected:
           (data['ppp_status'] ?? '').toString().toLowerCase().contains('connect'),
+      modemPhoneNumber: ModemStatus.normalizeModemNumber(
+        (data['msisdn'] ?? data['LocalNumber'] ?? '').toString(),
+      ),
       deviceModel: (data['model_name'] ?? modelHint).toString(),
       wanIp: (data['wan_ipaddr'] ?? '-').toString(),
       lanIp: (data['lan_ipaddr'] ?? gatewayIp).toString(),

@@ -169,6 +169,7 @@ class ModemStatus {
   final bool wanConnected;
 
   // Device Details
+  final String modemPhoneNumber;
   final String deviceModel;
   final String wanIp;
   final String lanIp;
@@ -231,6 +232,7 @@ class ModemStatus {
     this.pci = '-',
     this.cellId = '-',
     this.wanConnected = true,
+    this.modemPhoneNumber = '',
     this.deviceModel = 'Modem 4G',
     this.wanIp = '-',
     this.lanIp = '192.168.43.1',
@@ -261,6 +263,19 @@ class ModemStatus {
     this.translatedExtras = const {},
     this.capabilities = const ModemCapabilities(),
   });
+
+  static String normalizeModemNumber(String raw) {
+    var s = raw.trim().replaceAll(RegExp(r'[\s\-]'), '');
+    if (s.isEmpty || s == 'NA' || s == 'unknown') return '';
+    if (s.startsWith('+967')) {
+      s = s.substring(4);
+    } else if (s.startsWith('00967')) {
+      s = s.substring(5);
+    } else if (s.startsWith('967') && s.length >= 11) {
+      s = s.substring(3);
+    }
+    return s;
+  }
 
   String get signalQualityArabic {
     if (signalPercent >= 75) return 'ممتازة';

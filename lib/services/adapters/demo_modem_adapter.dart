@@ -1,8 +1,7 @@
 import '../../models/modem_models.dart';
 import 'modem_adapter.dart';
 
-/// Interactive Demo Adapter matching the exact Modmia Yemen 4G screen recording
-/// so users can preview and interact with every feature even when away from a modem.
+/// Interactive Demo Adapter for offline preview when away from a physical modem.
 class DemoModemAdapter implements ModemAdapter {
   @override
   final String gatewayIp;
@@ -102,7 +101,8 @@ class DemoModemAdapter implements ModemAdapter {
       pci: '214',
       cellId: '4180923',
       wanConnected: true,
-      deviceModel: 'L818A Yemen 4G (محاكاة)',
+      modemPhoneNumber: '106406416',
+      deviceModel: 'MIFI-L818A (محاكاة)',
       wanIp: '10.214.88.143',
       lanIp: gatewayIp,
       macAddress: 'C8:3A:35:7B:40:11',

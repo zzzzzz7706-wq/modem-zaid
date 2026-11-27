@@ -9,7 +9,7 @@ import 'adapters/modem_adapter.dart';
 import 'modem_detector.dart';
 
 class AppController extends ChangeNotifier {
-  AppPalette _palette = AppPalette.midnightModmia;
+  AppPalette _palette = AppPalette.midnightRoyal;
   AppPalette get palette => _palette;
 
   ModemIdentity _identity = const ModemIdentity(
@@ -50,6 +50,9 @@ class AppController extends ChangeNotifier {
   String _customGatewayIp = '';
   String get customGatewayIp => _customGatewayIp;
 
+  String _lastModemNumber = '';
+  String get lastModemNumber => _lastModemNumber;
+
   List<String> _savedPhones = [];
   List<String> get savedPhones => _savedPhones;
 
@@ -80,7 +83,11 @@ class AppController extends ChangeNotifier {
     _savedUsername = prefs.getString('saved_username') ?? 'admin';
     _savedPassword = prefs.getString('saved_password') ?? 'admin';
     _customGatewayIp = prefs.getString('custom_gateway_ip') ?? '';
+    _lastModemNumber = prefs.getString('last_modem_number') ?? '';
     _savedPhones = prefs.getStringList('saved_yemen4g_phones') ?? [];
+    if (_lastModemNumber.isNotEmpty && !_savedPhones.contains(_lastModemNumber)) {
+      _savedPhones = [_lastModemNumber, ..._savedPhones];
+    }
 
     final disabledIds = prefs.getStringList('disabled_shortcuts') ?? [];
     if (disabledIds.isNotEmpty) {
@@ -184,10 +191,13 @@ class AppController extends ChangeNotifier {
       await prefs.setString('saved_username', _savedUsername);
       await prefs.setString('saved_password', _savedPassword);
 
-      _status = await _adapter!.fetchStatus(forceFullRefresh: true);
+      _status = await _adapter!.fetchStatus(forceFullRefresh: false);
+      await _recordDetectedModemNumber(_status.modemPhoneNumber);
       _evaluateAlerts(_status);
       _isAuthenticated = true;
       _startLivePolling();
+      // Load secondary details asynchronously right after instant portal entry
+      Future.microtask(() => refreshStatus(silent: true, full: true));
       return true;
     } catch (e) {
       _lastError = 'حدث خطأ أثناء الاتصال بالمودم: ${_identity.gatewayIp}';
@@ -196,6 +206,18 @@ class AppController extends ChangeNotifier {
       _isLoggingIn = false;
       notifyListeners();
     }
+  }
+
+  Future<void> _recordDetectedModemNumber(String num) async {
+    final clean = num.trim();
+    if (clean.isEmpty) return;
+    _lastModemNumber = clean;
+    if (!_savedPhones.contains(clean)) {
+      _savedPhones = [clean, ..._savedPhones].take(5).toList();
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('last_modem_number', clean);
+    await prefs.setStringList('saved_yemen4g_phones', _savedPhones);
   }
 
   Future<bool> authenticateWithBiometrics() async {
@@ -213,9 +235,7 @@ class AppController extends ChangeNotifier {
         );
         if (!didAuth) return false;
       }
-    } catch (_) {
-      // Fallback to saved credentials if device has no lock screen configured
-    }
+    } catch (_) {}
     return login(_savedUsername, _savedPassword);
   }
 
@@ -228,6 +248,7 @@ class AppController extends ChangeNotifier {
     _adapter = demo.adapter;
     await _adapter!.login('admin', 'admin');
     _status = await _adapter!.fetchStatus(forceFullRefresh: true);
+    await _recordDetectedModemNumber(_status.modemPhoneNumber);
     _evaluateAlerts(_status);
     _isAuthenticated = true;
     _isLoggingIn = false;
@@ -275,6 +296,7 @@ class AppController extends ChangeNotifier {
           pci: _status.pci,
           cellId: _status.cellId,
           wanConnected: _status.wanConnected,
+          modemPhoneNumber: _status.modemPhoneNumber,
           deviceModel: _status.deviceModel,
           wanIp: _status.wanIp,
           lanIp: _status.lanIp,
@@ -326,6 +348,10 @@ class AppController extends ChangeNotifier {
     try {
       final next = await _adapter!.fetchStatus(forceFullRefresh: full);
       _status = next;
+      if (next.modemPhoneNumber.isNotEmpty &&
+          next.modemPhoneNumber != _lastModemNumber) {
+        await _recordDetectedModemNumber(next.modemPhoneNumber);
+      }
       _evaluateAlerts(next);
     } catch (_) {} finally {
       if (!silent) {

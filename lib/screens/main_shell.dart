@@ -404,6 +404,17 @@ class _MainShellState extends State<MainShell> {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
+                  if (c.status.modemPhoneNumber.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      'رقم المودم: ${c.status.modemPhoneNumber}',
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),

@@ -37,28 +37,27 @@ class AppPalette {
     required this.info,
   });
 
-  // Exact dark theme matching the Modmia Yemen 4G video recording
-  static const midnightModmia = AppPalette(
+  static const midnightRoyal = AppPalette(
     id: 'midnight',
-    nameAr: 'الداكن الأصلي (مودميا)',
+    nameAr: 'الداكن الملكي',
     brightness: Brightness.dark,
-    bgPrimary: Color(0xFF0A0D14),
-    bgCard: Color(0xFF131823),
-    bgElevated: Color(0xFF1C2333),
-    borderSubtle: Color(0xFF252E42),
+    bgPrimary: Color(0xFF090C14),
+    bgCard: Color(0xFF121826),
+    bgElevated: Color(0xFF1B2336),
+    borderSubtle: Color(0xFF28344E),
     accentPrimary: Color(0xFFA855F7),
     accentSecondary: Color(0xFFEC4899),
     waveGradient: [
-      Color(0xFFF9A8D4),
+      Color(0xFFF472B6),
       Color(0xFFD946EF),
-      Color(0xFF7E22CE),
+      Color(0xFF6D28D9),
     ],
     textPrimary: Color(0xFFF8FAFC),
     textSecondary: Color(0xFF94A3B8),
     success: Color(0xFF22C55E),
     warning: Color(0xFFF97316),
     danger: Color(0xFFEF4444),
-    info: Color(0xFF3B82F6),
+    info: Color(0xFF38BDF8),
   );
 
   static const cyberCyan = AppPalette(
@@ -131,7 +130,7 @@ class AppPalette {
   );
 
   static const List<AppPalette> all = [
-    midnightModmia,
+    midnightRoyal,
     cyberCyan,
     emeraldNight,
     cleanLight,
@@ -141,7 +140,7 @@ class AppPalette {
     for (final p in all) {
       if (p.id == id) return p;
     }
-    return midnightModmia;
+    return midnightRoyal;
   }
 
   ThemeData toThemeData() {

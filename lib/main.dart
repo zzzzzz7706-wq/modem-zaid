@@ -44,7 +44,29 @@ class ModemZaidApp extends StatelessWidget {
           ],
           theme: palette.toThemeData(),
           home: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 300),
+            duration: const Duration(milliseconds: 520),
+            switchInCurve: Curves.easeOutQuart,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (child, animation) {
+              final scaleAnim = Tween<double>(
+                begin: 0.93,
+                end: 1.0,
+              ).animate(animation);
+              final slideAnim = Tween<Offset>(
+                begin: const Offset(0, 0.04),
+                end: Offset.zero,
+              ).animate(animation);
+              return FadeTransition(
+                opacity: animation,
+                child: ScaleTransition(
+                  scale: scaleAnim,
+                  child: SlideTransition(
+                    position: slideAnim,
+                    child: child,
+                  ),
+                ),
+              );
+            },
             child: controller.isAuthenticated
                 ? MainShell(
                     key: const ValueKey('main_shell'),

@@ -143,13 +143,27 @@ class _ModemSettingsTabState extends State<ModemSettingsTab> {
                       children: [
                         _iconBox(Icons.smartphone_rounded, p.accentSecondary, p),
                         const SizedBox(width: 12),
-                        Text(
-                          'معلومات الجهاز',
-                          style: TextStyle(
-                            fontSize: 15.5,
-                            fontWeight: FontWeight.w700,
-                            color: p.textPrimary,
-                          ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'معلومات الجهاز',
+                              style: TextStyle(
+                                fontSize: 15.5,
+                                fontWeight: FontWeight.w700,
+                                color: p.textPrimary,
+                              ),
+                            ),
+                            if (s.modemPhoneNumber.isNotEmpty)
+                              Text(
+                                'رقم المودم: ${s.modemPhoneNumber}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: p.accentSecondary,
+                                ),
+                              ),
+                          ],
                         ),
                       ],
                     ),
@@ -169,6 +183,8 @@ class _ModemSettingsTabState extends State<ModemSettingsTab> {
                 padding: const EdgeInsets.all(16),
                 child: Column(
                   children: [
+                    if (s.modemPhoneNumber.isNotEmpty)
+                      _detailRow('رقم المودم (يمن فورجي)', s.modemPhoneNumber, p),
                     _detailRow('طراز المودم', s.deviceModel, p),
                     _detailRow('المشغل', s.operatorName, p),
                     _detailRow('عنوان المودم (LAN)', s.lanIp, p),

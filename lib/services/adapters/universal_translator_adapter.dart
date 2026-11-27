@@ -181,6 +181,46 @@ class UniversalTranslatorAdapter implements ModemAdapter {
     _isJrdWebApi = false;
 
     try {
+      // 0. Check Inseego / Novatel Jetpack MiFi (/login gSecureToken + /srv/status)
+      try {
+        final jpLogin = await _client
+            .get(Uri.parse('$_baseUrl/login'), headers: _headers)
+            .timeout(const Duration(seconds: 3));
+        final scJp = jpLogin.headers['set-cookie'];
+        if (scJp != null && scJp.isNotEmpty) _cookie = scJp.split(';').first;
+        final jpBody = utf8.decode(jpLogin.bodyBytes, allowMalformed: true);
+        final tokMatch = RegExp(
+                r'name\s*=\s*["\x27]gSecureToken["\x27][^>]*value\s*=\s*["\x27]([^"\x27]+)["\x27]|["\x27]gSecureToken["\x27]\s*[:=]\s*["\x27]([^"\x27]+)["\x27]')
+            .firstMatch(jpBody);
+        final gTok = (tokMatch?.group(1) ?? tokMatch?.group(2) ?? '').trim();
+        if (gTok.isNotEmpty) {
+          final shaPwd =
+              sha1.convert(utf8.encode('$_password$gTok')).toString();
+          final sub = await _client.post(
+            Uri.parse('$_baseUrl/submitLogin/'),
+            headers: _headers,
+            body: {'shaPassword': shaPwd, 'gSecureToken': gTok},
+          ).timeout(const Duration(seconds: 4));
+          final scSub = sub.headers['set-cookie'];
+          if (scSub != null && scSub.isNotEmpty) {
+            _cookie = scSub.split(';').first;
+          }
+          final subBody =
+              utf8.decode(sub.bodyBytes, allowMalformed: true).toLowerCase();
+          if (sub.statusCode < 400 &&
+              !subBody.contains('invalid') &&
+              !subBody.contains('wrong') &&
+              !subBody.contains('error')) {
+            return const LoginOutcome(success: true);
+          }
+          return const LoginOutcome(
+            success: false,
+            wrongCredentials: true,
+            message: 'كلمة المرور غير صحيحة.',
+          );
+        }
+      } catch (_) {}
+
       // 1. Check Alcatel / TCL / Speed 4G JSON-RPC (/jrd/webapi)
       final sysInfo = await _jrdCall('GetSystemInfo');
       if (sysInfo != null && sysInfo['result'] is Map) {
@@ -250,6 +290,16 @@ class UniversalTranslatorAdapter implements ModemAdapter {
       final passB64 = base64Encode(utf8.encode(_password));
 
       final loginCandidates = <Map<String, dynamic>>[
+        {
+          'path': '/cgi-bin/http.cgi',
+          'json': true,
+          'body': {
+            'cmdId': 'LOGIN',
+            'username': _username,
+            'password': _password,
+            'passwd': passSha256,
+          },
+        },
         {
           'path': '/cgi-bin/lua.cgi',
           'json': true,
@@ -470,6 +520,7 @@ class UniversalTranslatorAdapter implements ModemAdapter {
 
     final endpoints = [
       '/',
+      '/srv/status',
       '/api/system/deviceinfo',
       '/status.json',
       '/api/status',
@@ -498,7 +549,10 @@ class UniversalTranslatorAdapter implements ModemAdapter {
           if (text.trim().startsWith('{')) {
             try {
               final map = jsonDecode(text) as Map<String, dynamic>;
-              map.forEach((k, v) {
+              final inner = map['statusData'] is Map
+                  ? (map['statusData'] as Map).cast<String, dynamic>()
+                  : map;
+              inner.forEach((k, v) {
                 if (v != null && (v is String || v is num || v is bool)) {
                   final valStr = v.toString().trim();
                   if (valStr.isNotEmpty && valStr.length < 48) {
@@ -528,7 +582,7 @@ class UniversalTranslatorAdapter implements ModemAdapter {
         detectedTitle;
 
     final ssid = _extractMatch(raw, [
-          RegExp(r'"(?:ssid|SSID|SSID1|wifi_ssid)"\s*:\s*"([^"]+)"'),
+          RegExp(r'"(?:ssid|SSID|SSID1|wifi_ssid|statusBarWiFiName)"\s*:\s*"([^"]+)"'),
           RegExp(r'<(?:ssid|SSID|WifiSsid)>([^<]+)</', caseSensitive: false),
           RegExp(r'var\s+ssid\s*=\s*["\x27]([^"\x27]+)["\x27]',
               caseSensitive: false),
@@ -537,7 +591,7 @@ class UniversalTranslatorAdapter implements ModemAdapter {
 
     final wanIp = _extractMatch(raw, [
           RegExp(
-              r'"(?:wan_ip|wanIp|ipv4|WanIPAddress|ExternalIPAddress)"\s*:\s*"([0-9\.]{7,15})"'),
+              r'"(?:wan_ip|wanIp|ipv4|WanIPAddress|ExternalIPAddress|statusBarIpAddress)"\s*:\s*"([0-9\.]{7,15})"'),
           RegExp(r'<(?:wan_ip|ipv4|WanIPAddress|ExternalIPAddress)>([0-9\.]{7,15})</',
               caseSensitive: false),
         ]) ??
@@ -557,7 +611,7 @@ class UniversalTranslatorAdapter implements ModemAdapter {
         '-';
     final msisdnRaw = _extractMatch(raw, [
           RegExp(
-              r'"?(?:msisdn|MSISDN|mdn|phone_number)"?\s*[:=>]\s*"?(\+?\d{8,14})"?'),
+              r'"?(?:msisdn|MSISDN|mdn|phone_number|Mdn)"?\s*[:=>]\s*"?(\+?\d{8,14})"?'),
         ]) ??
         '';
     final modemNum = ModemStatus.extractFirstValidNumber(
@@ -568,11 +622,11 @@ class UniversalTranslatorAdapter implements ModemAdapter {
     );
 
     final rsrp = _extractMatch(raw, [
-      RegExp(r'"?(?:rsrp|lte_rsrp)"?\s*[:=>]\s*"?(-?\d{2,3})"?',
+      RegExp(r'"?(?:rsrp|lte_rsrp|statusBarRsrp)"?\s*[:=>]\s*"?(-?\d{2,3})"?',
           caseSensitive: false),
     ]);
     final sinr = _extractMatch(raw, [
-      RegExp(r'"?(?:sinr|snr|lte_snr)"?\s*[:=>]\s*"?(-?\d{1,2})"?',
+      RegExp(r'"?(?:sinr|snr|lte_snr|statusBarSnr)"?\s*[:=>]\s*"?(-?\d{1,2})"?',
           caseSensitive: false),
     ]);
     final bandRaw = _extractMatch(raw, [
@@ -581,7 +635,7 @@ class UniversalTranslatorAdapter implements ModemAdapter {
     ]);
     final batStr = _extractMatch(raw, [
       RegExp(
-          r'"?(?:battery|battery_pers|BatteryPercent|Battery_voltage)"?\s*[:=>]\s*"?(\d{1,3})"?'),
+          r'"?(?:battery|battery_pers|BatteryPercent|Battery_voltage|statusBarBatteryPercent)"?\s*[:=>]\s*"?(\d{1,3})"?'),
     ]);
 
     for (final m in RegExp(

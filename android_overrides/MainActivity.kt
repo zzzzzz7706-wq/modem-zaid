@@ -42,11 +42,17 @@ class MainActivity : FlutterFragmentActivity() {
 
     @Suppress("DEPRECATION")
     private fun findWifiNetwork(cm: ConnectivityManager): Network? {
+        var fallbackWifi: Network? = null
         for (net in cm.allNetworks) {
             val caps = cm.getNetworkCapabilities(net) ?: continue
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return net
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue
+            if (fallbackWifi == null) fallbackWifi = net
+            val lp = cm.getLinkProperties(net)
+            val hasV4 = lp?.linkAddresses?.any { it.address is Inet4Address } == true
+            if (hasV4) return net
         }
-        return null
+        return fallbackWifi
     }
 
     private fun intToIp(v: Int): String =
@@ -57,6 +63,12 @@ class MainActivity : FlutterFragmentActivity() {
         val out = HashMap<String, Any?>()
         val net = findWifiNetwork(cm)
         if (net == null) {
+            if (bind) {
+                try {
+                    cm.bindProcessToNetwork(null)
+                } catch (ignored: Exception) {
+                }
+            }
             out["connected"] = false
             return out
         }
@@ -74,6 +86,18 @@ class MainActivity : FlutterFragmentActivity() {
                     if (host != null && host != "0.0.0.0") {
                         gateway = host
                         break
+                    }
+                }
+            }
+            if (gateway == null) {
+                for (route in lp.routes) {
+                    val gw = route.gateway
+                    if (gw is Inet4Address) {
+                        val host = gw.hostAddress
+                        if (host != null && host != "0.0.0.0") {
+                            gateway = host
+                            break
+                        }
                     }
                 }
             }
@@ -102,6 +126,14 @@ class MainActivity : FlutterFragmentActivity() {
                     if (localIp == null && dhcp.ipAddress != 0) localIp = intToIp(dhcp.ipAddress)
                 }
             } catch (ignored: Exception) {
+            }
+        }
+
+        // Unvalidated Wi-Fi networks in Airplane Mode on Android 12+ may omit default route
+        if (gateway == null && localIp != null) {
+            val parts = localIp.split(".")
+            if (parts.size == 4 && (parts[0] == "192" || parts[0] == "10" || parts[0] == "172")) {
+                gateway = "${parts[0]}.${parts[1]}.${parts[2]}.1"
             }
         }
 

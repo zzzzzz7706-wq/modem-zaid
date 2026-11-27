@@ -138,21 +138,21 @@ jobs:
       - name: Build Ultra-Slim Split-ABI Release APKs
         run: |
           flutter build apk --release --split-per-abi --tree-shake-icons --obfuscate --split-debug-info=/tmp/symbols
-          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ModemZaid-arm64-v1.4.0.apk
-          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ModemZaid-arm32-v1.4.0.apk
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ModemZaid-arm64-v1.5.0.apk
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ModemZaid-arm32-v1.5.0.apk
           ls -lh ModemZaid-arm*.apk
 
       - name: Publish Slim APKs to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.4.0
-          name: "مودم زيد v1.4.0 — دعم كامل لمودم المؤسسة (Yemen 4G CPE) ومودم Star Speed 4G"
+          tag_name: v1.5.0
+          name: "مودم زيد v1.5.0 — إصلاح فوري للدخول السريع ودعم شامل لجميع مودمات يمن فورجي وسبيد فورجي"
           body: |
-            إصدار **مودم زيد v1.4.0 (Modem Zaid)**:
-            - إضافة محول أصيل ومخصص لمودم **المؤسسة العامة للاتصالات (`4G YEMEN — 4G CPE` / `192.168.0.1` بنظام `Marvell UAPXC`)** بعد استخراج بروتوكول `PostXml` والمصادقة الدقيقة من الجهاز الفعلي (الإشارة، الأجهزة المتصلة والسابقة، حظر `MAC`، الواي فاي، تثبيت الترددات، تحديد السرعة، الرسائل).
-            - دعم كامل لمودمات **Star Speed 4G / ZTE ZXIC 2025 (`192.168.0.1`)** التي تطلب كلمة المرور فقط (فحص `LD` و `RD` وحساب `AD` بتشفير `SHA-256` حتى عند إخفاء بيانات الطراز قبل الدخول، مع فحص `/tmpl/login.html`).
-            - ربط أصيل بواجهة الواي فاي في أندرويد وحذف وضع المحاكاة نهائياً وعرض رقم المودم المتصل حالياً فقط.
+            إصدار **مودم زيد v1.5.0 (Modem Zaid)**:
+            - **إصلاح جذري وسريع للدخول والربط**: فصل دقيق 100% بين مودم الجيب `MIFI-L818A` (`192.168.43.1` - `Notion Duster`) ومودم المؤسسة المنزلي `Yemen 4G CPE` (`192.168.0.1` - `Marvell UAPXC`)، وتسريع قراءة مقابس الشبكة لتقليص زمن الدخول من 15 ثانية إلى ~1.5 ثانية فقط.
+            - **تبديل فوري بين المودمات (حتى في وضع الطيران + واي فاي)**: إعادة فحص وتحديث ربط الواي فاي تلقائياً عند الانتقال بين أي مودمين بدون الحاجة لإغلاق التطبيق.
+            - **دعم موسع وشامل لجميع المودمات المنتشرة في اليمن** (المؤسسة العامة للاتصالات، `Star Speed 4G`، `Olax`، `ZLT`، `ZTE`، `Huawei`، `SAM`، `Vortex`، `Cool 4G`، `Jetpack`، `WeGo`، `Falcon`) مع نافذة **المودمات المدعومة**.
           files: |
-            ModemZaid-arm64-v1.4.0.apk
-            ModemZaid-arm32-v1.4.0.apk
+            ModemZaid-arm64-v1.5.0.apk
+            ModemZaid-arm32-v1.5.0.apk
           make_latest: true

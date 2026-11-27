@@ -5,6 +5,7 @@ import '../theme/app_theme.dart';
 import '../widgets/balance_inquiry_sheet.dart';
 import '../widgets/devices_manager_sheet.dart';
 import '../widgets/gauges_and_cards.dart';
+import '../widgets/supported_modems_sheet.dart';
 import '../widgets/wifi_quick_modal.dart';
 import 'diagnostics_tab.dart';
 import 'home_tab.dart';
@@ -498,6 +499,18 @@ class _MainShellState extends State<MainShell> {
               onTap: () {
                 Navigator.pop(context);
                 showWifiQrSheet(context, c);
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.router_rounded, color: p.accentPrimary),
+              title: Text(
+                'المودمات المدعومة',
+                style:
+                    TextStyle(color: p.textPrimary, fontWeight: FontWeight.w600),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                showSupportedModemsDialog(context, c);
               },
             ),
             const Divider(),

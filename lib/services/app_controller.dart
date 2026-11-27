@@ -85,6 +85,8 @@ class AppController extends ChangeNotifier {
 
   Timer? _pollTimer;
   Timer? _clockTimer;
+  Timer? _wifiWatchTimer;
+  String _lastSeenWifiSig = '';
   bool _lowBatteryNotified = false;
   bool _pollInFlight = false;
 
@@ -119,6 +121,22 @@ class AppController extends ChangeNotifier {
 
     notifyListeners();
     await detectModem();
+    _startWifiDiscoveryWatcher();
+  }
+
+  void _startWifiDiscoveryWatcher() {
+    _wifiWatchTimer?.cancel();
+    _wifiWatchTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
+      if (_isAuthenticated || _isDetecting || _isLoggingIn) return;
+      try {
+        final wifi = await WifiNetworkBinder.query(bind: true);
+        final sig = '${wifi.connected}|${wifi.gateway}|${wifi.localIp}';
+        if (sig != _lastSeenWifiSig || (wifi.connected && !_identity.reachable)) {
+          _lastSeenWifiSig = sig;
+          await detectModem();
+        }
+      } catch (_) {}
+    });
   }
 
   Future<void> setPalette(AppPalette newPalette) async {
@@ -176,11 +194,13 @@ class AppController extends ChangeNotifier {
     _lowBatteryNotified = false;
   }
 
-  Future<void> detectModem() async {
+  Future<void> detectModem({bool keepLastError = false}) async {
     _isDetecting = true;
-    _lastError = null;
+    if (!keepLastError) _lastError = null;
     notifyListeners();
     try {
+      final wifi = await WifiNetworkBinder.query(bind: true);
+      _lastSeenWifiSig = '${wifi.connected}|${wifi.gateway}|${wifi.localIp}';
       final result = await ModemDetector.autoDetect(
         preferredIp: _customGatewayIp.isEmpty ? null : _customGatewayIp,
       );
@@ -191,7 +211,7 @@ class AppController extends ChangeNotifier {
       _identity = result.identity;
       _adapter = result.adapter;
     } catch (_) {
-      _lastError = 'تعذر فحص الشبكة اللاسلكية';
+      if (!keepLastError) _lastError = 'تعذر فحص الشبكة اللاسلكية';
     } finally {
       _isDetecting = false;
       notifyListeners();
@@ -214,20 +234,10 @@ class AppController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Re-bind to Wi-Fi (user may have toggled Wi-Fi / Mobile Data) and only
-      // run a full re-scan when the modem is unknown or has changed.
-      final wifi = await WifiNetworkBinder.query(bind: true);
-      final sameGateway = _customGatewayIp.isNotEmpty
-          ? _identity.gatewayIp == _customGatewayIp
-          : (wifi.gateway.isEmpty || wifi.gateway == _identity.gatewayIp);
-      final localIpChanged =
-          wifi.localIp.isNotEmpty && wifi.localIp != _identity.localClientIp;
-      if (_adapter == null ||
-          !_identity.reachable ||
-          !sameGateway ||
-          localIpChanged) {
-        await detectModem();
-      }
+      // Always re-bind to Wi-Fi and verify the active modem fingerprint before login
+      // so switching between two modems (even both on 192.168.0.1 or in Airplane Mode)
+      // never reuses a stale adapter.
+      await detectModem(keepLastError: true);
 
       if (_adapter == null || !_identity.reachable) {
         _lastError = _identity.statusMessage.isNotEmpty
@@ -719,6 +729,7 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _wifiWatchTimer?.cancel();
     _stopLivePolling();
     super.dispose();
   }

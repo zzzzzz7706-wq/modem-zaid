@@ -120,17 +120,17 @@ class NotionMifiAdapter implements ModemAdapter {
       }
       await socket.flush();
 
-      final builder = BytesBuilder(copy: false);
+      Uint8List rawBytes = Uint8List(0);
       try {
-        await socket
-            .listen((chunk) => builder.add(chunk))
-            .asFuture<void>()
-            .timeout(timeout, onTimeout: () {});
+        rawBytes = await ModemDetector.readHttpResponseBytes(
+          socket,
+          timeout: timeout,
+          isHeaderOnlyChallenge: pathAndQuery == '/login.cgi',
+          isCgiLoginAction: pathAndQuery.startsWith('/login.cgi?'),
+        );
       } catch (_) {
-        if (!tolerateDisconnect && builder.isEmpty) rethrow;
+        if (!tolerateDisconnect && rawBytes.isEmpty) rethrow;
       }
-
-      final rawBytes = builder.takeBytes();
       if (rawBytes.isEmpty) {
         return _RawHttpResponse(
           statusCode: tolerateDisconnect ? 200 : 0,

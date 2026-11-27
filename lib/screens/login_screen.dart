@@ -4,6 +4,7 @@ import '../models/modem_models.dart';
 import '../services/app_controller.dart';
 import '../widgets/balance_inquiry_sheet.dart';
 import '../widgets/gauges_and_cards.dart';
+import '../widgets/supported_modems_sheet.dart';
 
 class LoginScreen extends StatefulWidget {
   final AppController controller;
@@ -290,6 +291,11 @@ class _LoginScreenState extends State<LoginScreen>
                                 ),
                               );
                             },
+                          ),
+                          const SizedBox(width: 8),
+                          _glassCircleButton(
+                            icon: Icons.router_outlined,
+                            onTap: () => showSupportedModemsDialog(context, c),
                           ),
                           const SizedBox(width: 8),
                           _glassCircleButton(
@@ -810,7 +816,7 @@ class _LoginScreenState extends State<LoginScreen>
                       ],
                       const SizedBox(height: 24),
                       Text(
-                        'مودم زيد • الإصدار 1.4.0',
+                        'مودم زيد • الإصدار 1.5.0',
                         style: TextStyle(
                           color: p.textSecondary.withOpacity(0.75),
                           fontSize: 12.5,

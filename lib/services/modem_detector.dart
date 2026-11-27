@@ -69,6 +69,7 @@ class ModemDetector {
     '192.168.8.1',
     '192.168.1.1',
     '192.168.100.1',
+    '192.168.70.1',
     '192.168.254.254',
     '192.168.225.1',
     '192.168.2.1',
@@ -183,13 +184,123 @@ class ModemDetector {
     return out.takeBytes();
   }
 
+  /// Reads an HTTP/1.x response from `sock` and finishes immediately once the
+  /// full body arrives (via `Content-Length`, chunked `0\r\n\r\n`, `</RGW>`,
+  /// `</html>`, or header-only `WWW-Authenticate` / CGI login response), avoiding
+  /// 5-second hangs on embedded `Mongoose/3.0` servers that ignore `Connection: close`.
+  static Future<Uint8List> readHttpResponseBytes(
+    Socket sock, {
+    required Duration timeout,
+    bool isHeaderOnlyChallenge = false,
+    bool isCgiLoginAction = false,
+  }) async {
+    final builder = BytesBuilder(copy: false);
+    final done = Completer<void>();
+    Timer? totalTimer;
+    Timer? idleAfterHeaderTimer;
+    StreamSubscription<Uint8List>? sub;
+
+    void finish() {
+      if (!done.isCompleted) done.complete();
+    }
+
+    int? parsedContentLength;
+    bool isChunked = false;
+    bool headersParsed = false;
+    int bodyStart = -1;
+
+    sub = sock.listen(
+      (chunk) {
+        builder.add(chunk);
+        final cur = builder.toBytes();
+        if (!headersParsed) {
+          final split = _indexOfBytes(cur, const [13, 10, 13, 10]);
+          if (split != -1) {
+            headersParsed = true;
+            bodyStart = split + 4;
+            final headText =
+                latin1.decode(cur.sublist(0, split), allowInvalid: true);
+            final lowerHead = headText.toLowerCase();
+            final clMatch =
+                RegExp(r'content-length:\s*(\d+)').firstMatch(lowerHead);
+            if (clMatch != null) {
+              parsedContentLength = int.tryParse(clMatch.group(1)!);
+            }
+            if (lowerHead.contains('transfer-encoding:') &&
+                lowerHead.contains('chunked')) {
+              isChunked = true;
+            }
+            if (isHeaderOnlyChallenge &&
+                parsedContentLength == null &&
+                !isChunked &&
+                lowerHead.contains('www-authenticate:')) {
+              finish();
+              return;
+            }
+          }
+        }
+
+        if (headersParsed) {
+          if (parsedContentLength != null &&
+              cur.length >= bodyStart + parsedContentLength!) {
+            finish();
+            return;
+          }
+          if (isChunked &&
+              _indexOfBytes(cur, const [48, 13, 10, 13, 10], bodyStart) != -1) {
+            finish();
+            return;
+          }
+          final tailStart = cur.length > 512 ? cur.length - 512 : 0;
+          final tail = latin1.decode(cur.sublist(tailStart), allowInvalid: true);
+          if (tail.contains('</RGW>') ||
+              tail.contains('</html>') ||
+              tail.contains('</HTML>')) {
+            finish();
+            return;
+          }
+          if (isCgiLoginAction) {
+            final full = latin1.decode(cur, allowInvalid: true);
+            final statusHits = RegExp(r'HTTP/1\.\d\s+\d{3}').allMatches(full).length;
+            if (statusHits >= 2 && full.endsWith('\r\n\r\n')) {
+              finish();
+              return;
+            }
+            idleAfterHeaderTimer?.cancel();
+            idleAfterHeaderTimer =
+                Timer(const Duration(milliseconds: 140), finish);
+          } else if (parsedContentLength == null && !isChunked) {
+            final fullHead =
+                latin1.decode(cur.sublist(0, bodyStart), allowInvalid: true).toLowerCase();
+            if (fullHead.contains('www-authenticate:') && cur.length == bodyStart) {
+              finish();
+              return;
+            }
+          }
+        }
+      },
+      onDone: finish,
+      onError: (_) => finish(),
+      cancelOnError: true,
+    );
+
+    totalTimer = Timer(timeout, finish);
+    await done.future;
+    totalTimer.cancel();
+    idleAfterHeaderTimer?.cancel();
+    try {
+      await sub.cancel();
+    } catch (_) {}
+    return builder.takeBytes();
+  }
+
   /// Performs a clean raw HTTP GET over LAN socket (`Connection: close`).
   static Future<_HttpProbe> _rawHttp(
     String ip,
     String path,
     String localIp, {
     int port = 80,
-    Duration timeout = const Duration(milliseconds: 3500),
+    Duration timeout = const Duration(milliseconds: 2800),
     Map<String, String>? extraHeaders,
   }) async {
     Socket? sock;
@@ -207,12 +318,12 @@ class ModemDetector {
       sock.add(utf8.encode(req.toString()));
       await sock.flush();
 
-      final bytes = BytesBuilder(copy: false);
-      await sock
-          .listen((chunk) => bytes.add(chunk))
-          .asFuture<void>()
-          .timeout(timeout, onTimeout: () {});
-      final wire = bytes.takeBytes();
+      final wire = await readHttpResponseBytes(
+        sock,
+        timeout: timeout,
+        isHeaderOnlyChallenge: path == '/login.cgi',
+        isCgiLoginAction: path.startsWith('/login.cgi?'),
+      );
       if (wire.isEmpty) return _HttpProbe.none;
 
       final split = _indexOfBytes(wire, const [13, 10, 13, 10]);
@@ -522,15 +633,15 @@ class ModemDetector {
     if (www.contains('digest') ||
         html.contains('xml_action.cgi') ||
         html.contains('g_platformName')) {
-      bool isUapxc = html.contains('lTitleUAPXC') ||
-          html.contains('wifiSetting.js') ||
-          html.contains('PostXml(');
+      // True discriminator: UAPXC loads `wifiSetting.js` and returns `<error_cause>5</error_cause>`
+      // on Duster GET, whereas Notion L818A loads `wireless_settings.js` (both share `lTitleUAPXC`!).
+      bool isUapxc = html.contains('wifiSetting.js');
       if (!isUapxc) {
         final dusterCheck = await _rawHttp(
           ip,
           '/xml_action.cgi?method=get&module=duster&file=status1',
           localIp,
-          timeout: const Duration(milliseconds: 2000),
+          timeout: const Duration(milliseconds: 1600),
         );
         if (dusterCheck.body.contains('<error_cause>')) {
           isUapxc = true;
@@ -797,10 +908,12 @@ class ModemDetector {
       );
     }
 
-    // 4. Universal Smart Translator for ANY other router/modem (PTC ADSL/Fiber,
-    // Huawei EMUI B312, Alcatel/Speed 4G /jrd/webapi, TP-Link, Tenda, D-Link, etc.)
+    // 4. Universal Smart Translator for ANY other router/modem (Jetpack MiFi,
+    // PTC ADSL/Fiber, Huawei EMUI B312, Alcatel /jrd/webapi, Tozed ZLT, etc.)
     final emuiDev = await _rawHttp(ip, '/api/system/deviceinfo', localIp,
-        timeout: const Duration(milliseconds: 1800));
+        timeout: const Duration(milliseconds: 1600));
+    final jetpackSrv = await _rawHttp(ip, '/srv/status', localIp,
+        timeout: const Duration(milliseconds: 1600));
     String emuiModel = '';
     if (emuiDev.body.trim().startsWith('{')) {
       try {
@@ -809,6 +922,9 @@ class ModemDetector {
             (m['DeviceName'] ?? m['ProductClass'] ?? '').toString().trim();
       } catch (_) {}
     }
+    final isJetpack = jetpackSrv.body.contains('statusData') ||
+        html.contains('gSecureToken') ||
+        html.toLowerCase().contains('jetpack');
 
     // Redirect from HTTP:80 -> HTTPS:443?
     final locHdr = (page.headers['location'] ?? '').trim().toLowerCase();
@@ -818,7 +934,8 @@ class ModemDetector {
         notionProbe.responded ||
         hi.responded ||
         zte.responded ||
-        emuiDev.responded) {
+        emuiDev.responded ||
+        jetpackSrv.responded) {
       final upnp = await upnpFuture;
       final realm = RegExp(r'realm="([^"]+)"', caseSensitive: false)
               .firstMatch(page.headers['www-authenticate'] ?? '')
@@ -830,20 +947,24 @@ class ModemDetector {
         ..._htmlModelCandidates(html),
         realm,
       ];
-      var vendor = _resolveVendor(
-        upnp: upnp,
-        primaryText: '$headerText\n${emuiDev.body}',
-        html: html,
-      );
+      var vendor = isJetpack
+          ? 'Jetpack'
+          : _resolveVendor(
+              upnp: upnp,
+              primaryText: '$headerText\n${emuiDev.body}',
+              html: html,
+            );
       if (vendor.isEmpty) vendor = _inferVendorFromCandidates(candidates);
       final name = _composeModelName(
         vendor: vendor,
         candidates: candidates,
         ip: ip,
-        fallback: '',
+        fallback: isJetpack ? 'MiFi' : '',
       );
-      final isPasswordOnly = html.contains('jrd/webapi') ||
+      final isPasswordOnly = isJetpack ||
+          html.contains('jrd/webapi') ||
           vendor == 'Alcatel' ||
+          vendor == 'Star Speed 4G' ||
           vendor == 'Speed 4G' ||
           emuiModel.isNotEmpty;
       return DetectionResult(
@@ -852,7 +973,8 @@ class ModemDetector {
           localClientIp: localIp,
           modelName: name,
           vendor: vendor,
-          protocolLabel: 'المترجم الذكي الشامل',
+          protocolLabel:
+              isJetpack ? 'Jetpack MiFi API' : 'المترجم الذكي الشامل',
           family: ModemFamily.universalTranslated,
           reachable: true,
           authMode: formAuth ??
@@ -996,10 +1118,14 @@ class ModemDetector {
     'ZTE': ['zte', 'zxhn', 'zxv10'],
     'Olax': ['olax'],
     'ZLT': ['zlt'],
-    'Star Speed 4G': ['star speed', 'starspeed', 'ستار سبيد'],
+    'Star Speed 4G': ['star speed', 'starspeed', 'osystel', 'ستار سبيد'],
     'Speed 4G': ['speed 4g', 'speed4g', 'سبيد فورجي'],
     'SAM': ['sam m50', 'sam 4g', 'sam4g'],
     'Vortex': ['vortex'],
+    'Cool 4G': ['cool 4g', 'cool4g', 'f239'],
+    'Jetpack': ['jetpack', 'inseego', 'novatel'],
+    'WeGo': ['wego'],
+    'Falcon': ['falcon'],
     'Opera': ['opera 4g', 'opera mifi'],
     'GreenPacket': ['greenpacket', 'green packet'],
     'Tozed': ['tozed'],
@@ -1041,18 +1167,32 @@ class ModemDetector {
         .hasMatch(joined)) {
       return 'Huawei';
     }
-    if (RegExp(r'\b(U10S|B50\s*PRO)\b').hasMatch(joined)) {
+    if (RegExp(r'\b(MF\s*600|OSYSTEL|B50\s*PRO)\b').hasMatch(joined)) {
       return 'Star Speed 4G';
     }
-    if (RegExp(r'\b(MF9\d{2}|MF2[89]\d|MC8\d{2}|MU5\d{3}|ZXHN|H108N|H168N|H267N|F6[0678]\d)\b')
+    if (RegExp(r'\b(MT80\s*PRO|MT80|MF982|MC80|U90|WD680|AX6\s*PRO)\b')
+        .hasMatch(joined)) {
+      return 'Olax';
+    }
+    if (RegExp(r'\b(M60M|S25|M90\s*PRO|M90|S10G|S12|P25|P28|T30|X21|X28|M30S?)\b')
+        .hasMatch(joined)) {
+      return 'ZLT';
+    }
+    if (RegExp(r'\b(MF293\w*|U10S|U20|MF9\d{2}|MF28\d|MC8\d{2}|MU5\d{3}|ZXHN|H108N|H168N|H267N|F6[0678]\d)\b')
         .hasMatch(joined)) {
       return 'ZTE';
     }
-    if (RegExp(r'\b(S10G|S12|P25|P28|T30|X21|X28|M30S?)\b').hasMatch(joined)) {
-      return 'ZLT';
+    if (RegExp(r'\b(SAM\s*M50|M50\s*PRO)\b').hasMatch(joined)) {
+      return 'SAM';
     }
-    if (RegExp(r'\b(MT80|MF982|MC80|U90|WD680|AX6\s*PRO)\b').hasMatch(joined)) {
-      return 'Olax';
+    if (RegExp(r'\b(M49)\b').hasMatch(joined)) {
+      return 'Vortex';
+    }
+    if (RegExp(r'\b(F239)\b').hasMatch(joined)) {
+      return 'Cool 4G';
+    }
+    if (RegExp(r'\b(8800L|7730L|6620L|M2000|M2100)\b').hasMatch(joined)) {
+      return 'Jetpack';
     }
     if (RegExp(r'\b(MW4[015]|MW70|EE40|EE70|HH4[01]|HH7[01])\b')
         .hasMatch(joined)) {
@@ -1280,6 +1420,7 @@ class ModemDetector {
       );
       final locations = <String>{};
       final s = sock;
+      final gotPacket = Completer<void>();
       final sub = s.listen((ev) {
         if (ev != RawSocketEvent.read) return;
         final dg = s.receive();
@@ -1287,13 +1428,17 @@ class ModemDetector {
         final text = utf8.decode(dg.data, allowMalformed: true);
         final m = RegExp(r'^location:\s*(\S+)', caseSensitive: false, multiLine: true)
             .firstMatch(text);
-        if (m != null) locations.add(m.group(1)!.trim());
+        if (m != null) {
+          locations.add(m.group(1)!.trim());
+          if (!gotPacket.isCompleted) gotPacket.complete();
+        }
       });
       s.send(msg, InternetAddress(ip), 1900);
       try {
         s.send(msg, InternetAddress('239.255.255.250'), 1900);
       } catch (_) {}
-      await Future<void>.delayed(const Duration(milliseconds: 1400));
+      await gotPacket.future
+          .timeout(const Duration(milliseconds: 450), onTimeout: () {});
       await sub.cancel();
       s.close();
       sock = null;

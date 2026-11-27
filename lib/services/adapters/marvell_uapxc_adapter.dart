@@ -153,16 +153,17 @@ class MarvellUapxcAdapter implements ModemAdapter {
       if (bodyBytes.isNotEmpty) sock.add(bodyBytes);
       await sock.flush();
 
-      final builder = BytesBuilder(copy: false);
+      Uint8List bytes = Uint8List(0);
       try {
-        await sock
-            .listen((c) => builder.add(c))
-            .asFuture<void>()
-            .timeout(timeout, onTimeout: () {});
+        bytes = await ModemDetector.readHttpResponseBytes(
+          sock,
+          timeout: timeout,
+          isHeaderOnlyChallenge: pathAndQuery == '/login.cgi',
+          isCgiLoginAction: pathAndQuery.startsWith('/login.cgi?'),
+        );
       } catch (_) {
-        if (!tolerateDisconnect && builder.isEmpty) rethrow;
+        if (!tolerateDisconnect && bytes.isEmpty) rethrow;
       }
-      final bytes = builder.takeBytes();
       if (bytes.isEmpty) {
         return _UapxcHttpRes(
           statusCode: tolerateDisconnect ? 200 : 0,
@@ -277,6 +278,8 @@ class MarvellUapxcAdapter implements ModemAdapter {
 
       if (authRes.statusCode == 401 ||
           authRes.statusCode == 500 ||
+          authRes.wire.contains('HTTP/1.1 500') ||
+          authRes.wire.contains('HTTP/1.0 500') ||
           (!authRes.body.contains('200 OK') &&
               authRes.body.trim().isNotEmpty &&
               authRes.body.toLowerCase().contains('fail'))) {
@@ -287,9 +290,13 @@ class MarvellUapxcAdapter implements ModemAdapter {
         );
       }
 
-      // Verify live RPC session using PostXml("sim", "get_sim_status")
-      final testDoc =
+      // Verify live RPC session using PostXml (works with or without SIM inserted)
+      var testDoc =
+          await _postRpcUnlocked('cm', 'get_link_context', allowRelogin: false);
+      testDoc ??=
           await _postRpcUnlocked('sim', 'get_sim_status', allowRelogin: false);
+      testDoc ??= await _postRpcUnlocked(
+          'router', 'router_get_version', allowRelogin: false);
       if (testDoc != null) {
         return const LoginOutcome(success: true);
       }
@@ -386,7 +393,7 @@ class MarvellUapxcAdapter implements ModemAdapter {
         '/xml_action.cgi?method=set',
         headers: {
           'Authorization': _buildAuthHeader('POST'),
-          'Content-Type': 'application/xml; charset=UTF-8',
+          'Content-Type': 'text/xml;charset=UTF-8',
           if (_cookie.isNotEmpty) 'Cookie': _cookie,
         },
         body: xmlPayload,

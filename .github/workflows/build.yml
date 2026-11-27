@@ -86,13 +86,17 @@ jobs:
           if "usesCleartextTraffic" not in xml:
               xml = xml.replace(
                   "<application",
-                  '<application\n        android:usesCleartextTraffic="true"\n        android:extractNativeLibs="true"',
+                  '<application\n        android:usesCleartextTraffic="true"',
                   1,
               )
 
           with open(manifest_path, "w", encoding="utf-8") as f:
               f.write(xml)
-          print("Updated AndroidManifest.xml with cleartext HTTP & compressed native libs")
+
+          for gf in glob.glob("android/app/build.gradle*"):
+              with open(gf, "a", encoding="utf-8") as f:
+                  f.write("\nandroid {\n    packaging {\n        jniLibs {\n            useLegacyPackaging = true\n        }\n    }\n}\n")
+              print("Enabled compressed JNI packaging in", gf)
 
           kt_files = glob.glob("android/app/src/main/kotlin/**/MainActivity.kt", recursive=True)
           for kt in kt_files:

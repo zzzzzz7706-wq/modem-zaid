@@ -2,21 +2,30 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import '../models/modem_models.dart';
 import '../services/app_controller.dart';
+import '../services/wifi_network_binder.dart';
 import '../services/yemen4g_balance_service.dart';
 
 Future<void> showBalanceInquirySheet(
   BuildContext context,
   AppController controller,
 ) async {
-  await showModalBottomSheet(
-    context: context,
-    isScrollControlled: true,
-    backgroundColor: controller.palette.bgCard,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-    ),
-    builder: (ctx) => _BalanceInquirySheetBody(controller: controller),
-  );
+  // The PTC portal is on the internet: let Android pick the best route
+  // (Mobile Data if the modem has no credit), then re-bind to Wi-Fi.
+  await WifiNetworkBinder.unbind();
+  if (!context.mounted) return;
+  try {
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: controller.palette.bgCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (ctx) => _BalanceInquirySheetBody(controller: controller),
+    );
+  } finally {
+    await WifiNetworkBinder.query(bind: true);
+  }
 }
 
 class _BalanceInquirySheetBody extends StatefulWidget {
@@ -43,8 +52,11 @@ class _BalanceInquirySheetBodyState extends State<_BalanceInquirySheetBody> {
   @override
   void initState() {
     super.initState();
-    if (widget.controller.savedPhones.isNotEmpty) {
-      _phoneCtrl.text = widget.controller.savedPhones.first;
+    final currentNumber = widget.controller.isAuthenticated
+        ? widget.controller.status.modemPhoneNumber
+        : '';
+    if (currentNumber.isNotEmpty) {
+      _phoneCtrl.text = currentNumber;
     }
     _loadCaptcha();
   }

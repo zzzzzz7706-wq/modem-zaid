@@ -442,7 +442,7 @@ class _MainShellState extends State<MainShell> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '${c.status.deviceModel} • ${c.identity.gatewayIp}',
+                    '${c.identity.modelName} • ${c.identity.gatewayIp}',
                     style: const TextStyle(
                       fontSize: 12.5,
                       color: Colors.white,

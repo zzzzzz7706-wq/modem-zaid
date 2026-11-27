@@ -4,6 +4,7 @@ import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart';
 import '../../models/modem_models.dart';
+import '../modem_detector.dart';
 import 'modem_adapter.dart';
 
 /// Adapter for Huawei / Brovi / Soyealink HiLink XML API routers
@@ -16,7 +17,8 @@ class HuaweiHilinkAdapter implements ModemAdapter {
   final String localClientIp;
 
   final String modelHint;
-  final http.Client _client = http.Client();
+  late final http.Client _client =
+      ModemDetector.createLanHttpClient(localClientIp);
 
   String _cookie = '';
   String _token = '';
@@ -58,13 +60,35 @@ class HuaweiHilinkAdapter implements ModemAdapter {
           .timeout(const Duration(seconds: 4));
       final sc = res.headers['set-cookie'];
       if (sc != null && sc.isNotEmpty) _cookie = sc.split(';').first;
-      final doc =
-          XmlDocument.parse(utf8.decode(res.bodyBytes, allowMalformed: true));
-      final ses = _findTag(doc, 'SesInfo');
-      final tok = _findTag(doc, 'TokInfo');
-      if (ses.isNotEmpty) _cookie = ses;
-      if (tok.isNotEmpty) _token = tok;
-      return true;
+      final raw = utf8.decode(res.bodyBytes, allowMalformed: true);
+      if (raw.contains('SesInfo') || raw.contains('TokInfo')) {
+        final doc = XmlDocument.parse(raw);
+        final ses = _findTag(doc, 'SesInfo');
+        final tok = _findTag(doc, 'TokInfo');
+        if (ses.isNotEmpty) {
+          _cookie = ses.contains('=') ? ses : 'SessionID=$ses';
+        }
+        if (tok.isNotEmpty) _token = tok;
+        return true;
+      }
+
+      // Fallback for older Huawei PTC CPEs (B310/E5573) using /api/webserver/token
+      final tokRes = await _client
+          .get(
+            Uri.parse('http://$gatewayIp/api/webserver/token'),
+            headers: {if (_cookie.isNotEmpty) 'Cookie': _cookie},
+          )
+          .timeout(const Duration(seconds: 4));
+      final sc2 = tokRes.headers['set-cookie'];
+      if (sc2 != null && sc2.isNotEmpty) _cookie = sc2.split(';').first;
+      final tokRaw = utf8.decode(tokRes.bodyBytes, allowMalformed: true);
+      if (tokRaw.contains('<token>')) {
+        final doc2 = XmlDocument.parse(tokRaw);
+        final t = _findTag(doc2, 'token');
+        if (t.isNotEmpty) _token = t;
+        return true;
+      }
+      return res.statusCode > 0 && res.statusCode < 500;
     } catch (_) {
       return false;
     }
@@ -91,13 +115,27 @@ class HuaweiHilinkAdapter implements ModemAdapter {
   }
 
   Future<bool> _apiPost(String path, String xmlBody) async {
+    final body = await _apiPostRaw(path, xmlBody);
+    return RegExp(r'<response>\s*OK\s*</response>', caseSensitive: false)
+        .hasMatch(body);
+  }
+
+  /// Posts XML and returns the raw response body ('' on network failure).
+  /// When [refreshToken] is false the caller already fetched a fresh token
+  /// (required for login, whose password hash embeds that exact token).
+  Future<String> _apiPostRaw(
+    String path,
+    String xmlBody, {
+    bool refreshToken = true,
+  }) async {
     try {
-      await _refreshSesTok();
+      if (refreshToken) await _refreshSesTok();
       final res = await _client
           .post(
             Uri.parse('http://$gatewayIp$path'),
             headers: {
               'Content-Type': 'application/xml; charset=UTF-8',
+              'X-Requested-With': 'XMLHttpRequest',
               if (_cookie.isNotEmpty) 'Cookie': _cookie,
               if (_token.isNotEmpty) '__RequestVerificationToken': _token,
             },
@@ -106,12 +144,12 @@ class HuaweiHilinkAdapter implements ModemAdapter {
           .timeout(const Duration(seconds: 6));
       final sc = res.headers['set-cookie'];
       if (sc != null && sc.isNotEmpty) _cookie = sc.split(';').first;
-      final tok = res.headers['__requestverificationtoken'];
-      if (tok != null && tok.isNotEmpty) _token = tok;
-      final body = utf8.decode(res.bodyBytes, allowMalformed: true);
-      return body.contains('<response>OK</response>');
+      final tok = res.headers['__requestverificationtokenone'] ??
+          res.headers['__requestverificationtoken'];
+      if (tok != null && tok.isNotEmpty) _token = tok.split('#').first;
+      return utf8.decode(res.bodyBytes, allowMalformed: true);
     } catch (_) {
-      return false;
+      return '';
     }
   }
 
@@ -128,29 +166,84 @@ class HuaweiHilinkAdapter implements ModemAdapter {
       );
     }
 
-    final passShaHex = sha256.convert(utf8.encode(_password)).toString();
-    final passB64 = base64Encode(utf8.encode(passShaHex));
-    final combined = '$_username$passB64$_token';
-    final finalShaHex = sha256.convert(utf8.encode(combined)).toString();
-    final finalEncoded = base64Encode(utf8.encode(finalShaHex));
+    // Some HiLink sticks/routers do not require any login at all.
+    final hlDoc = await _apiGet('/api/user/hilink_login');
+    if (_findTag(hlDoc, 'hilink_login') == '0') {
+      return const LoginOutcome(success: true);
+    }
 
-    final ok4 = await _apiPost(
-      '/api/user/login',
-      '<request><Username>$_username</Username><Password>$finalEncoded</Password><password_type>4</password_type></request>',
-    );
-    if (ok4) return const LoginOutcome(success: true);
+    // Already logged in (session still valid)?
+    final stateDoc = await _apiGet('/api/user/state-login');
+    if (_findTag(stateDoc, 'State') == '0') {
+      return const LoginOutcome(success: true);
+    }
+    final pwType = _findTag(stateDoc, 'password_type');
+    final types = pwType == '0' ? const ['0', '4'] : const ['4', '0'];
 
-    final plainB64 = base64Encode(utf8.encode(_password));
-    final ok0 = await _apiPost(
-      '/api/user/login',
-      '<request><Username>$_username</Username><Password>$plainB64</Password></request>',
-    );
-    if (ok0) return const LoginOutcome(success: true);
+    String lastCode = '';
+    for (final t in types) {
+      // Fresh token immediately before hashing – the hash embeds it.
+      await _refreshSesTok();
+      final String encoded;
+      if (t == '4') {
+        final passShaHex = sha256.convert(utf8.encode(_password)).toString();
+        final passB64 = base64Encode(utf8.encode(passShaHex));
+        final finalShaHex =
+            sha256.convert(utf8.encode('$_username$passB64$_token')).toString();
+        encoded = base64Encode(utf8.encode(finalShaHex));
+      } else {
+        encoded = base64Encode(utf8.encode(_password));
+      }
+      final body = await _apiPostRaw(
+        '/api/user/login',
+        '<request><Username>$_username</Username><Password>$encoded</Password><password_type>$t</password_type></request>',
+        refreshToken: false,
+      );
+      if (body.isEmpty) continue;
+      if (RegExp(r'<response>\s*OK\s*</response>', caseSensitive: false)
+          .hasMatch(body)) {
+        return const LoginOutcome(success: true);
+      }
+      final code = RegExp(r'<code>(\d+)</code>').firstMatch(body)?.group(1) ?? '';
+      lastCode = code;
+      if (code == '108003') {
+        // Already logged in from another session – treat as success.
+        return const LoginOutcome(success: true);
+      }
+      if (code == '108001' || code == '108002' || code == '108006' ||
+          code == '108007' || code == '108010') {
+        // Definitive answer – don't burn extra attempts (modem may lock).
+        break;
+      }
+    }
 
-    return const LoginOutcome(
+    if (lastCode == '108001' || lastCode == '108002' || lastCode == '108006') {
+      return const LoginOutcome(
+        success: false,
+        wrongCredentials: true,
+        message: 'كلمة المرور غير صحيحة.',
+      );
+    }
+    if (lastCode == '108007' || lastCode == '108010') {
+      return const LoginOutcome(
+        success: false,
+        wrongCredentials: false,
+        message: 'المودم أوقف الدخول مؤقتاً بسبب محاولات خاطئة كثيرة. انتظر بضع دقائق ثم حاول.',
+      );
+    }
+    if (lastCode == '108009') {
+      return const LoginOutcome(
+        success: false,
+        wrongCredentials: false,
+        message: 'المودم مسجل الدخول من جهاز آخر حالياً. سجل الخروج منه ثم حاول.',
+      );
+    }
+    return LoginOutcome(
       success: false,
-      wrongCredentials: true,
-      message: 'اسم المستخدم أو كلمة المرور غير صحيحة.',
+      wrongCredentials: lastCode.isNotEmpty,
+      message: lastCode.isNotEmpty
+          ? 'رفض المودم تسجيل الدخول (رمز $lastCode). تأكد من كلمة المرور.'
+          : 'تعذر إكمال تسجيل الدخول إلى مودم هواوي ($gatewayIp).',
     );
   }
 

@@ -7,6 +7,7 @@ import '../models/modem_models.dart';
 import '../theme/app_theme.dart';
 import 'adapters/modem_adapter.dart';
 import 'modem_detector.dart';
+import 'wifi_network_binder.dart';
 
 class AppController extends ChangeNotifier {
   AppPalette _palette = AppPalette.midnightRoyal;
@@ -58,8 +59,10 @@ class AppController extends ChangeNotifier {
   String _customGatewayIp = '';
   String get customGatewayIp => _customGatewayIp;
 
-  String _lastModemNumber = '';
-  String get lastModemNumber => _lastModemNumber;
+  /// Real service number of the CURRENTLY connected & logged-in modem only.
+  /// Never falls back to a number remembered from a previous modem.
+  String get currentModemNumber =>
+      _isAuthenticated ? _status.modemPhoneNumber : '';
 
   List<String> _savedPhones = [];
   List<String> get savedPhones => _savedPhones;
@@ -102,11 +105,10 @@ class AppController extends ChangeNotifier {
     _savedUsername = prefs.getString('saved_username') ?? 'admin';
     _savedPassword = prefs.getString('saved_password') ?? 'admin';
     _customGatewayIp = prefs.getString('custom_gateway_ip') ?? '';
-    _lastModemNumber = prefs.getString('last_modem_number') ?? '';
+    // Older versions persisted the previous modem's number and showed it for
+    // any modem – remove it so only the live number is ever displayed.
+    await prefs.remove('last_modem_number');
     _savedPhones = prefs.getStringList('saved_yemen4g_phones') ?? [];
-    if (_lastModemNumber.isNotEmpty && !_savedPhones.contains(_lastModemNumber)) {
-      _savedPhones = [_lastModemNumber, ..._savedPhones];
-    }
 
     final disabledIds = prefs.getStringList('disabled_shortcuts') ?? [];
     if (disabledIds.isNotEmpty) {
@@ -161,6 +163,19 @@ class AppController extends ChangeNotifier {
     await detectModem();
   }
 
+  bool _isSameModem(ModemIdentity a, ModemIdentity b) =>
+      a.gatewayIp == b.gatewayIp && a.family == b.family;
+
+  /// Clears every value read from a previous modem so nothing stale
+  /// (number, devices, signal...) can appear for a different modem.
+  void _clearModemData() {
+    _status = const ModemStatus();
+    _lastUpdatedAt = null;
+    _isConnectionLost = false;
+    _consecutivePollFailures = 0;
+    _lowBatteryNotified = false;
+  }
+
   Future<void> detectModem() async {
     _isDetecting = true;
     _lastError = null;
@@ -169,6 +184,10 @@ class AppController extends ChangeNotifier {
       final result = await ModemDetector.autoDetect(
         preferredIp: _customGatewayIp.isEmpty ? null : _customGatewayIp,
       );
+      if (!_isSameModem(_identity, result.identity) ||
+          !result.identity.reachable) {
+        if (!_isAuthenticated) _clearModemData();
+      }
       _identity = result.identity;
       _adapter = result.adapter;
     } catch (_) {
@@ -179,22 +198,48 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  /// Uses the model name read after login (e.g. `device_name`) when it is more
+  /// precise than what the unauthenticated scan found.
+  void _refineModelName(ModemStatus s) {
+    if (s.deviceModel.isEmpty) return;
+    final better = ModemDetector.improveModelName(_identity, s.deviceModel);
+    if (better != null) {
+      _identity = _identity.copyWith(modelName: better);
+    }
+  }
+
   Future<bool> login(String username, String password) async {
     _isLoggingIn = true;
     _lastError = null;
     notifyListeners();
 
     try {
-      // Always refresh local Wi-Fi binding in case user toggled Wi-Fi or Mobile Data
-      await detectModem();
+      // Re-bind to Wi-Fi (user may have toggled Wi-Fi / Mobile Data) and only
+      // run a full re-scan when the modem is unknown or has changed.
+      final wifi = await WifiNetworkBinder.query(bind: true);
+      final sameGateway = _customGatewayIp.isNotEmpty
+          ? _identity.gatewayIp == _customGatewayIp
+          : (wifi.gateway.isEmpty || wifi.gateway == _identity.gatewayIp);
+      final localIpChanged =
+          wifi.localIp.isNotEmpty && wifi.localIp != _identity.localClientIp;
+      if (_adapter == null ||
+          !_identity.reachable ||
+          !sameGateway ||
+          localIpChanged) {
+        await detectModem();
+      }
 
       if (_adapter == null || !_identity.reachable) {
-        _lastError =
-            'تعذر العثور على مودم متصل عبر الواي فاي (${_identity.gatewayIp}). تأكد من الاتصال بشبكة الواي فاي الخاصة بالمودم.';
+        _lastError = _identity.statusMessage.isNotEmpty
+            ? _identity.statusMessage
+            : 'تعذر العثور على مودم متصل عبر الواي فاي. تأكد من الاتصال بشبكة الواي فاي الخاصة بالمودم.';
         return false;
       }
 
-      final outcome = await _adapter!.loginWithOutcome(username, password);
+      // Password-only modems: the login screen sends `admin` internally.
+      final effectiveUser = username.trim().isEmpty ? 'admin' : username.trim();
+
+      final outcome = await _adapter!.loginWithOutcome(effectiveUser, password);
       if (!outcome.success) {
         _lastError = outcome.message.isNotEmpty
             ? outcome.message
@@ -202,13 +247,16 @@ class AppController extends ChangeNotifier {
         return false;
       }
 
-      _savedUsername = username.trim().isEmpty ? 'admin' : username.trim();
+      _savedUsername = effectiveUser;
       _savedPassword = password;
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('saved_username', _savedUsername);
       await prefs.setString('saved_password', _savedPassword);
 
+      // Fresh session: never carry values from a previous modem/session.
+      _clearModemData();
       _status = await _adapter!.fetchStatus(forceFullRefresh: false);
+      _refineModelName(_status);
       _lastUpdatedAt = DateTime.now();
       _isConnectionLost = false;
       _consecutivePollFailures = 0;
@@ -230,15 +278,15 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  /// Adds the live number to the balance-inquiry quick list (user convenience).
   Future<void> _recordDetectedModemNumber(String num) async {
     final clean = num.trim();
     if (clean.isEmpty) return;
-    _lastModemNumber = clean;
-    if (!_savedPhones.contains(clean)) {
-      _savedPhones = [clean, ..._savedPhones].take(5).toList();
-    }
+    if (_savedPhones.isNotEmpty && _savedPhones.first == clean) return;
+    _savedPhones = [clean, ..._savedPhones.where((p) => p != clean)]
+        .take(5)
+        .toList();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('last_modem_number', clean);
     await prefs.setStringList('saved_yemen4g_phones', _savedPhones);
   }
 
@@ -261,35 +309,13 @@ class AppController extends ChangeNotifier {
     return login(_savedUsername, _savedPassword);
   }
 
-  Future<void> enterDemoMode() async {
-    _isLoggingIn = true;
-    _lastError = null;
-    notifyListeners();
-    final demo = ModemDetector.createDemoMode();
-    _identity = demo.identity;
-    _adapter = demo.adapter;
-    await _adapter!.loginWithOutcome('admin', 'admin');
-    _status = await _adapter!.fetchStatus(forceFullRefresh: true);
-    _lastUpdatedAt = DateTime.now();
-    _isConnectionLost = false;
-    _consecutivePollFailures = 0;
-    await _recordDetectedModemNumber(_status.modemPhoneNumber);
-    _evaluateAlerts(_status);
-    _isAuthenticated = true;
-    _isLoggingIn = false;
-    _startLivePolling();
-    notifyListeners();
-  }
-
   Future<void> logout() async {
     _stopLivePolling();
     try {
       await _adapter?.logout();
     } catch (_) {}
     _isAuthenticated = false;
-    _isConnectionLost = false;
-    _consecutivePollFailures = 0;
-    _lowBatteryNotified = false;
+    _clearModemData();
     notifyListeners();
     await detectModem();
   }
@@ -327,12 +353,17 @@ class AppController extends ChangeNotifier {
       notifyListeners();
     }
     try {
-      if (_isConnectionLost && _identity.family != ModemFamily.demo) {
+      if (_isConnectionLost) {
         // Attempt automatic gateway re-discovery & re-authentication
         final det = await ModemDetector.autoDetect(
           preferredIp: _customGatewayIp.isEmpty ? null : _customGatewayIp,
         );
         if (det.identity.reachable) {
+          if (!_isSameModem(_identity, det.identity)) {
+            // A different modem: drop everything shown from the old one.
+            _clearModemData();
+            _isConnectionLost = true;
+          }
           _identity = det.identity;
           _adapter = det.adapter;
           final reauth =
@@ -345,6 +376,7 @@ class AppController extends ChangeNotifier {
 
       final next = await _adapter!.fetchStatus(forceFullRefresh: full);
       _status = next;
+      _refineModelName(next);
       _lastUpdatedAt = DateTime.now();
       if (_isConnectionLost) {
         _isConnectionLost = false;
@@ -352,8 +384,7 @@ class AppController extends ChangeNotifier {
       }
       _consecutivePollFailures = 0;
 
-      if (next.modemPhoneNumber.isNotEmpty &&
-          next.modemPhoneNumber != _lastModemNumber) {
+      if (next.modemPhoneNumber.isNotEmpty) {
         await _recordDetectedModemNumber(next.modemPhoneNumber);
       }
       _evaluateAlerts(next);

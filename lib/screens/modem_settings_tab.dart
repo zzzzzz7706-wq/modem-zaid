@@ -234,8 +234,15 @@ class _ModemSettingsTabState extends State<ModemSettingsTab> {
                         ],
                       ),
                     ),
-                    _detailRow('طراز المودم',
-                        s.deviceModel.isEmpty ? 'غير متاح' : s.deviceModel, p),
+                    _detailRow(
+                        'طراز المودم',
+                        widget.controller.identity.modelName.isNotEmpty
+                            ? widget.controller.identity.modelName
+                            : (s.deviceModel.isEmpty ? 'غير متاح' : s.deviceModel),
+                        p),
+                    if (widget.controller.identity.vendor.isNotEmpty)
+                      _detailRow('الشركة المصنعة',
+                          widget.controller.identity.vendor, p),
                     _detailRow(
                         'مزود الخدمة',
                         s.operatorName.isEmpty ? 'غير متاح' : s.operatorName,

@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import '../models/modem_models.dart';
 import '../services/app_controller.dart';
 import '../widgets/balance_inquiry_sheet.dart';
 import '../widgets/gauges_and_cards.dart';
@@ -20,6 +21,12 @@ class _LoginScreenState extends State<LoginScreen>
   late final AnimationController _entranceCtrl;
   late final AnimationController _waveCtrl;
   bool _obscurePassword = true;
+
+  /// User tapped "show username" on a password-only modem.
+  bool _forceShowUsername = false;
+
+  bool get _showUsernameField =>
+      widget.controller.identity.requiresUsername || _forceShowUsername;
 
   @override
   void initState() {
@@ -49,7 +56,9 @@ class _LoginScreenState extends State<LoginScreen>
 
   Future<void> _handleLogin() async {
     FocusScope.of(context).unfocus();
-    final user = _userCtrl.text.trim().isEmpty ? 'admin' : _userCtrl.text.trim();
+    final user = _showUsernameField && _userCtrl.text.trim().isNotEmpty
+        ? _userCtrl.text.trim()
+        : 'admin';
     final pass = _passCtrl.text.isEmpty ? 'admin' : _passCtrl.text;
     await widget.controller.login(user, pass);
   }
@@ -105,13 +114,29 @@ class _LoginScreenState extends State<LoginScreen>
               ),
               const SizedBox(height: 12),
               _infoTile('طراز المودم', widget.controller.identity.modelName, p),
-              if (widget.controller.lastModemNumber.isNotEmpty)
-                _infoTile('رقم المودم المحفوظ',
-                    widget.controller.lastModemNumber, p),
+              if (widget.controller.identity.vendor.isNotEmpty)
+                _infoTile('الشركة', widget.controller.identity.vendor, p),
+              _infoTile(
+                  'طريقة الدخول',
+                  switch (widget.controller.identity.authMode) {
+                    ModemAuthMode.passwordOnly => 'كلمة مرور فقط',
+                    ModemAuthMode.none => 'بدون كلمة مرور',
+                    ModemAuthMode.usernameAndPassword => 'اسم مستخدم + كلمة مرور',
+                  },
+                  p),
+              _infoTile(
+                  'عنوان المودم', widget.controller.identity.gatewayIp, p),
               _infoTile(
                   'نظام الترجمة', widget.controller.identity.protocolLabel, p),
               _infoTile(
                   'عنوان هاتفك', widget.controller.identity.localClientIp, p),
+              if (widget.controller.identity.statusMessage.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  widget.controller.identity.statusMessage,
+                  style: TextStyle(fontSize: 12, color: p.warning),
+                ),
+              ],
               const SizedBox(height: 14),
               TextField(
                 controller: ipCtrl,
@@ -439,10 +464,8 @@ class _LoginScreenState extends State<LoginScreen>
                                     c.isDetecting
                                         ? 'جاري التعرف على المودم...'
                                         : (id.reachable
-                                            ? (c.lastModemNumber.isNotEmpty
-                                                ? 'متصل • ${id.modelName} • ${c.lastModemNumber}'
-                                                : 'متصل • ${id.modelName} (${id.gatewayIp})')
-                                            : 'غير متصل بالمودم (اضغط لإعادة الفحص)'),
+                                            ? 'متصل • ${id.modelName} (${id.gatewayIp})'
+                                            : '${id.modelName} (اضغط لإعادة الفحص)'),
                                     overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
                                       fontSize: 12.5,
@@ -481,95 +504,142 @@ class _LoginScreenState extends State<LoginScreen>
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              TextField(
-                                controller: _userCtrl,
-                                style: TextStyle(
-                                  color: p.textPrimary,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                                decoration: InputDecoration(
-                                  labelText: 'اسم المستخدم',
-                                  labelStyle:
-                                      TextStyle(color: p.textSecondary),
-                                  hintText: 'الافتراضي: admin',
-                                  filled: true,
-                                  fillColor: p.bgElevated.withOpacity(0.75),
-                                  contentPadding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
-                                    vertical: 15,
+                              if (_showUsernameField) ...[
+                                TextField(
+                                  controller: _userCtrl,
+                                  style: TextStyle(
+                                    color: p.textPrimary,
+                                    fontWeight: FontWeight.w600,
                                   ),
-                                  prefixIcon: Icon(
-                                    Icons.person_outline_rounded,
-                                    color: p.accentPrimary,
-                                  ),
-                                  border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                    borderSide:
-                                        BorderSide(color: p.borderSubtle),
-                                  ),
-                                  enabledBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                    borderSide:
-                                        BorderSide(color: p.borderSubtle),
-                                  ),
-                                  focusedBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                    borderSide: BorderSide(
-                                        color: p.accentPrimary, width: 1.5),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 14),
-                              TextField(
-                                controller: _passCtrl,
-                                obscureText: _obscurePassword,
-                                onSubmitted: (_) => _handleLogin(),
-                                style: TextStyle(
-                                  color: p.textPrimary,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                                decoration: InputDecoration(
-                                  labelText: 'كلمة المرور',
-                                  labelStyle:
-                                      TextStyle(color: p.textSecondary),
-                                  hintText: 'الافتراضية: admin',
-                                  filled: true,
-                                  fillColor: p.bgElevated.withOpacity(0.75),
-                                  contentPadding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
-                                    vertical: 15,
-                                  ),
-                                  prefixIcon: Icon(
-                                    Icons.lock_outline_rounded,
-                                    color: p.accentPrimary,
-                                  ),
-                                  suffixIcon: IconButton(
-                                    onPressed: () => setState(() =>
-                                        _obscurePassword = !_obscurePassword),
-                                    icon: Icon(
-                                      _obscurePassword
-                                          ? Icons.visibility_off_outlined
-                                          : Icons.visibility_outlined,
-                                      color: p.textSecondary,
+                                  decoration: InputDecoration(
+                                    labelText: 'اسم المستخدم',
+                                    labelStyle:
+                                        TextStyle(color: p.textSecondary),
+                                    hintText: 'الافتراضي: admin',
+                                    filled: true,
+                                    fillColor: p.bgElevated.withOpacity(0.75),
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                      vertical: 15,
+                                    ),
+                                    prefixIcon: Icon(
+                                      Icons.person_outline_rounded,
+                                      color: p.accentPrimary,
+                                    ),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                      borderSide:
+                                          BorderSide(color: p.borderSubtle),
+                                    ),
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                      borderSide:
+                                          BorderSide(color: p.borderSubtle),
+                                    ),
+                                    focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                      borderSide: BorderSide(
+                                          color: p.accentPrimary, width: 1.5),
                                     ),
                                   ),
-                                  border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                    borderSide:
-                                        BorderSide(color: p.borderSubtle),
+                                ),
+                                const SizedBox(height: 14),
+                              ] else if (id.reachable) ...[
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 8),
+                                  margin: const EdgeInsets.only(bottom: 12),
+                                  decoration: BoxDecoration(
+                                    color: p.accentPrimary.withOpacity(0.10),
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                        color:
+                                            p.accentPrimary.withOpacity(0.32)),
                                   ),
-                                  enabledBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                    borderSide:
-                                        BorderSide(color: p.borderSubtle),
-                                  ),
-                                  focusedBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                    borderSide: BorderSide(
-                                        color: p.accentPrimary, width: 1.5),
+                                  child: Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Flexible(
+                                        child: Text(
+                                          id.authMode == ModemAuthMode.none
+                                              ? 'هذا المودم لا يتطلب كلمة مرور للدخول'
+                                              : 'هذا المودم يطلب كلمة المرور فقط',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: p.textPrimary,
+                                          ),
+                                        ),
+                                      ),
+                                      InkWell(
+                                        onTap: () => setState(
+                                            () => _forceShowUsername = true),
+                                        child: Text(
+                                          'إظهار المستخدم',
+                                          style: TextStyle(
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.w700,
+                                            color: p.accentSecondary,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
-                              ),
+                              ],
+                              if (id.authMode != ModemAuthMode.none ||
+                                  _forceShowUsername)
+                                TextField(
+                                  controller: _passCtrl,
+                                  obscureText: _obscurePassword,
+                                  onSubmitted: (_) => _handleLogin(),
+                                  style: TextStyle(
+                                    color: p.textPrimary,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  decoration: InputDecoration(
+                                    labelText: 'كلمة المرور',
+                                    labelStyle:
+                                        TextStyle(color: p.textSecondary),
+                                    hintText: 'أدخل كلمة مرور المودم',
+                                    filled: true,
+                                    fillColor: p.bgElevated.withOpacity(0.75),
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                      vertical: 15,
+                                    ),
+                                    prefixIcon: Icon(
+                                      Icons.lock_outline_rounded,
+                                      color: p.accentPrimary,
+                                    ),
+                                    suffixIcon: IconButton(
+                                      onPressed: () => setState(() =>
+                                          _obscurePassword = !_obscurePassword),
+                                      icon: Icon(
+                                        _obscurePassword
+                                            ? Icons.visibility_off_outlined
+                                            : Icons.visibility_outlined,
+                                        color: p.textSecondary,
+                                      ),
+                                    ),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                      borderSide:
+                                          BorderSide(color: p.borderSubtle),
+                                    ),
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                      borderSide:
+                                          BorderSide(color: p.borderSubtle),
+                                    ),
+                                    focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                      borderSide: BorderSide(
+                                          color: p.accentPrimary, width: 1.5),
+                                    ),
+                                  ),
+                                ),
                               if (c.lastError != null) ...[
                                 const SizedBox(height: 12),
                                 Container(
@@ -707,13 +777,29 @@ class _LoginScreenState extends State<LoginScreen>
                       ),
 
                       if (!id.reachable) ...[
-                        const SizedBox(height: 12),
+                        if (id.statusMessage.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            child: Text(
+                              id.statusMessage,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: p.textSecondary,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 8),
                         TextButton.icon(
-                          onPressed: c.isLoggingIn ? null : c.enterDemoMode,
-                          icon: Icon(Icons.play_circle_outline_rounded,
+                          onPressed:
+                              c.isDetecting ? null : _showGatewayConfigDialog,
+                          icon: Icon(Icons.settings_ethernet_rounded,
                               color: p.accentSecondary, size: 18),
                           label: Text(
-                            'معاينة الواجهة (وضع المحاكاة بدون مودم)',
+                            'تحديد عنوان IP للمودم يدوياً أو فحص الشبكة',
                             style: TextStyle(
                               color: p.accentSecondary,
                               fontSize: 12.5,
@@ -724,7 +810,7 @@ class _LoginScreenState extends State<LoginScreen>
                       ],
                       const SizedBox(height: 24),
                       Text(
-                        'مودم زيد • الإصدار 1.2.0',
+                        'مودم زيد • الإصدار 1.3.0',
                         style: TextStyle(
                           color: p.textSecondary.withOpacity(0.75),
                           fontSize: 12.5,

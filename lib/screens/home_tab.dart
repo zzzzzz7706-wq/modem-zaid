@@ -19,9 +19,11 @@ class HomeTab extends StatelessWidget {
   });
 
   Widget _buildModemHeroBanner(BuildContext context, ModemStatus s, dynamic p) {
-    final modemNum = s.modemPhoneNumber.isNotEmpty
-        ? s.modemPhoneNumber
-        : controller.lastModemNumber;
+    // Live number of THIS modem only – never a number from a previous modem.
+    final modemNum = s.modemPhoneNumber;
+    final modelLabel = controller.identity.modelName.isNotEmpty
+        ? controller.identity.modelName
+        : s.deviceModel;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -61,7 +63,7 @@ class HomeTab extends StatelessWidget {
               children: [
                 Text(
                   [
-                    if (s.deviceModel.isNotEmpty) s.deviceModel,
+                    if (modelLabel.isNotEmpty) modelLabel,
                     if (s.operatorName.isNotEmpty) s.operatorName,
                     controller.isConnectionLost ? 'إعادة اتصال...' : 'مباشر',
                   ].join(' • '),

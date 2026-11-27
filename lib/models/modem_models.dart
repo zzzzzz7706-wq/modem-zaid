@@ -3,16 +3,35 @@ enum ModemFamily {
   zteGoform,
   huaweiHilink,
   universalTranslated,
-  demo,
+}
+
+/// How the modem's own web login page asks for credentials.
+enum ModemAuthMode {
+  /// Login page shows a username field + password field.
+  usernameAndPassword,
+
+  /// Login page shows ONLY a password field (ZTE / Olax / Huawei HiLink /
+  /// Alcatel / many "Speed 4G" MiFi models). Username is sent internally as `admin`.
+  passwordOnly,
+
+  /// Modem does not require a password at all.
+  none,
 }
 
 class ModemIdentity {
   final String gatewayIp;
   final String localClientIp;
   final String modelName;
+
+  /// Manufacturer (Huawei, ZTE, TP-Link, ...) or empty when unknown.
+  final String vendor;
   final String protocolLabel;
   final ModemFamily family;
   final bool reachable;
+  final ModemAuthMode authMode;
+
+  /// Human readable reason when [reachable] is false.
+  final String statusMessage;
 
   const ModemIdentity({
     required this.gatewayIp,
@@ -21,23 +40,34 @@ class ModemIdentity {
     required this.protocolLabel,
     required this.family,
     required this.reachable,
+    this.vendor = '',
+    this.authMode = ModemAuthMode.usernameAndPassword,
+    this.statusMessage = '',
   });
+
+  bool get requiresUsername => authMode == ModemAuthMode.usernameAndPassword;
 
   ModemIdentity copyWith({
     String? gatewayIp,
     String? localClientIp,
     String? modelName,
+    String? vendor,
     String? protocolLabel,
     ModemFamily? family,
     bool? reachable,
+    ModemAuthMode? authMode,
+    String? statusMessage,
   }) {
     return ModemIdentity(
       gatewayIp: gatewayIp ?? this.gatewayIp,
       localClientIp: localClientIp ?? this.localClientIp,
       modelName: modelName ?? this.modelName,
+      vendor: vendor ?? this.vendor,
       protocolLabel: protocolLabel ?? this.protocolLabel,
       family: family ?? this.family,
       reachable: reachable ?? this.reachable,
+      authMode: authMode ?? this.authMode,
+      statusMessage: statusMessage ?? this.statusMessage,
     );
   }
 }

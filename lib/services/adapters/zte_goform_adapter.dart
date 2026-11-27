@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import '../../models/modem_models.dart';
+import '../modem_detector.dart';
 import 'modem_adapter.dart';
 
 /// Adapter for ZTE / ZLT / Olax / Sanechips CGI modems
@@ -15,7 +16,9 @@ class ZteGoformAdapter implements ModemAdapter {
   final String localClientIp;
 
   final String modelHint;
-  final http.Client _client = http.Client();
+  final bool useReqProc;
+  late final http.Client _client =
+      ModemDetector.createLanHttpClient(localClientIp);
   String _cookie = '';
   String _username = 'admin';
   String _password = 'admin';
@@ -24,13 +27,21 @@ class ZteGoformAdapter implements ModemAdapter {
     required this.gatewayIp,
     required this.localClientIp,
     this.modelHint = 'ZTE / Olax 4G',
+    this.useReqProc = false,
   });
 
   @override
   ModemFamily get family => ModemFamily.zteGoform;
 
   @override
-  String get protocolName => 'ZTE / Olax Goform CGI';
+  String get protocolName =>
+      useReqProc ? 'Qualcomm / Speed 4G CGI' : 'ZTE / Olax Goform CGI';
+
+  String get _getPath =>
+      useReqProc ? '/reqproc/proc_get' : '/goform/goform_get_cmd_process';
+
+  String get _setPath =>
+      useReqProc ? '/reqproc/proc_post' : '/goform/goform_set_cmd_process';
 
   Map<String, String> get _headers => {
         'Referer': 'http://$gatewayIp/index.html',
@@ -41,7 +52,7 @@ class ZteGoformAdapter implements ModemAdapter {
   Future<Map<String, dynamic>> _getCmd(List<String> cmds) async {
     final cmdParam = cmds.join(',');
     final uri = Uri.parse(
-      'http://$gatewayIp/goform/goform_get_cmd_process?isTest=false&multi_data=1&cmd=${Uri.encodeComponent(cmdParam)}',
+      'http://$gatewayIp$_getPath?isTest=false&multi_data=1&cmd=${Uri.encodeComponent(cmdParam)}',
     );
     final res = await _client
         .get(uri, headers: _headers)
@@ -49,8 +60,9 @@ class ZteGoformAdapter implements ModemAdapter {
     final sc = res.headers['set-cookie'];
     if (sc != null && sc.isNotEmpty) _cookie = sc.split(';').first;
     final body = utf8.decode(res.bodyBytes, allowMalformed: true).trim();
-    if (body.startsWith('{')) {
-      return jsonDecode(body) as Map<String, dynamic>;
+    final start = body.indexOf('{');
+    if (start != -1) {
+      return jsonDecode(body.substring(start)) as Map<String, dynamic>;
     }
     return {};
   }
@@ -72,7 +84,7 @@ class ZteGoformAdapter implements ModemAdapter {
         bodyFields['AD'] = ad;
       }
 
-      final uri = Uri.parse('http://$gatewayIp/goform/goform_set_cmd_process');
+      final uri = Uri.parse('http://$gatewayIp$_setPath');
       final res = await _client
           .post(uri, headers: _headers, body: bodyFields)
           .timeout(const Duration(seconds: 6));
@@ -90,17 +102,44 @@ class ZteGoformAdapter implements ModemAdapter {
     _username = username.trim().isEmpty ? 'admin' : username.trim();
     _password = password;
 
-    final candidates = <String>[
-      base64Encode(utf8.encode(_password)),
-      sha256.convert(utf8.encode(_password)).toString().toUpperCase(),
-      sha256.convert(utf8.encode(_password)).toString().toLowerCase(),
-    ];
-
+    // Pre-login info: LD (salt for new firmwares), login state, lock state.
+    Map<String, dynamic> pre = {};
     bool reachedServer = false;
+    try {
+      pre = await _getCmd(
+          ['LD', 'loginfo', 'psw_fail_num_str', 'login_lock_time', 'modem_main_state']);
+      reachedServer = true;
+    } catch (_) {}
+
+    if ((pre['loginfo'] ?? '').toString().toLowerCase() == 'ok') {
+      return const LoginOutcome(success: true);
+    }
+    final lockTime = int.tryParse((pre['login_lock_time'] ?? '').toString()) ?? 0;
+    final failLeft = (pre['psw_fail_num_str'] ?? '').toString();
+    if (failLeft == '0' && lockTime > 0) {
+      return LoginOutcome(
+        success: false,
+        wrongCredentials: false,
+        message: 'المودم مقفل مؤقتاً بسبب محاولات خاطئة. انتظر ${lockTime > 60 ? '${(lockTime / 60).ceil()} دقيقة' : '$lockTime ثانية'} ثم حاول.',
+      );
+    }
+
+    final ld = (pre['LD'] ?? '').toString().trim();
+    final candidates = <String>[];
+    if (ld.isNotEmpty) {
+      // New ZTE / Olax / Speed 4G firmwares: SHA256(SHA256(pwd).upper + LD).upper
+      final inner = sha256.convert(utf8.encode(_password)).toString().toUpperCase();
+      candidates.add(sha256.convert(utf8.encode('$inner$ld')).toString().toUpperCase());
+    } else {
+      // Classic firmwares: Base64(pwd), then SHA256 variant used by some clones.
+      candidates.add(base64Encode(utf8.encode(_password)));
+      candidates.add(sha256.convert(utf8.encode(_password)).toString().toUpperCase());
+    }
+
+    String lastResult = '';
     for (final encoded in candidates) {
       try {
-        final uri =
-            Uri.parse('http://$gatewayIp/goform/goform_set_cmd_process');
+        final uri = Uri.parse('http://$gatewayIp$_setPath');
         final res = await _client.post(
           uri,
           headers: _headers,
@@ -110,14 +149,19 @@ class ZteGoformAdapter implements ModemAdapter {
             'password': encoded,
             'username': _username,
           },
-        ).timeout(const Duration(seconds: 5));
+        ).timeout(const Duration(seconds: 6));
         reachedServer = true;
         final sc = res.headers['set-cookie'];
         if (sc != null && sc.isNotEmpty) _cookie = sc.split(';').first;
         final text = utf8.decode(res.bodyBytes, allowMalformed: true);
-        if (text.contains('"0"') || text.contains('success')) {
+        final m = RegExp(r'"result"\s*:\s*"?(\w+)"?').firstMatch(text);
+        lastResult = m?.group(1) ?? '';
+        if (lastResult == '0' || text.contains('success')) {
           return const LoginOutcome(success: true);
         }
+        // "3" = wrong password on classic firmwares. With LD there's only one
+        // correct encoding so don't retry (each retry costs a lock attempt).
+        if (ld.isNotEmpty) break;
       } catch (_) {}
     }
 
@@ -129,10 +173,29 @@ class ZteGoformAdapter implements ModemAdapter {
       );
     }
 
-    return const LoginOutcome(
+    // Read remaining attempts to give a precise message.
+    String left = '';
+    try {
+      final post = await _getCmd(['psw_fail_num_str', 'loginfo']);
+      if ((post['loginfo'] ?? '').toString().toLowerCase() == 'ok') {
+        return const LoginOutcome(success: true);
+      }
+      left = (post['psw_fail_num_str'] ?? '').toString();
+    } catch (_) {}
+
+    if (lastResult == '1' && left.isEmpty) {
+      return const LoginOutcome(
+        success: false,
+        wrongCredentials: false,
+        message: 'رفض المودم الدخول. قد يكون مستخدماً من جهاز آخر — حاول بعد قليل.',
+      );
+    }
+    return LoginOutcome(
       success: false,
       wrongCredentials: true,
-      message: 'اسم المستخدم أو كلمة المرور غير صحيحة.',
+      message: left.isNotEmpty && left != '0'
+          ? 'كلمة المرور غير صحيحة (المحاولات المتبقية: $left).'
+          : 'كلمة المرور غير صحيحة.',
     );
   }
 

@@ -27,21 +27,32 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Bundle Offline Cairo Fonts & Prepare Android Platform
+      - name: Subset Offline Cairo Fonts & Prepare Android Platform
         run: |
           mkdir -p assets/fonts
           curl -fsSL "https://raw.githubusercontent.com/google/fonts/main/ofl/cairo/Cairo%5Bslnt%2Cwght%5D.ttf" -o /tmp/Cairo-VF.ttf
-          python3 -m pip install --quiet fonttools pillow
+          python3 -m pip install --quiet fonttools brotli pillow
 
           python3 - << 'PYEOF'
           from fontTools.ttLib import TTFont
           from fontTools.varLib.instancer import instantiateVariableFont
+          from fontTools.subset import main as subset_main
+          import os
 
+          unicodes = "U+0020-007E,U+00A0-00FF,U+0600-06FF,U+0750-077F,U+08A0-08FF,U+2000-206F,U+2190-21FF,U+FB50-FDFF,U+FE70-FEFF"
           for w, name in [(400, "Cairo-Regular.ttf"), (600, "Cairo-SemiBold.ttf"), (700, "Cairo-Bold.ttf")]:
               vf = TTFont("/tmp/Cairo-VF.ttf")
               inst = instantiateVariableFont(vf, {"wght": w, "slnt": 0})
-              inst.save(f"assets/fonts/{name}")
-          print("Instantiated static Cairo fonts successfully")
+              raw_path = f"/tmp/raw_{name}"
+              out_path = f"assets/fonts/{name}"
+              inst.save(raw_path)
+              subset_main([
+                  raw_path,
+                  f"--unicodes={unicodes}",
+                  f"--output-file={out_path}",
+                  "--layout-features=*",
+              ])
+              print(name, os.path.getsize(out_path), "bytes")
           PYEOF
 
           mkdir -p /tmp/backup
@@ -75,13 +86,13 @@ jobs:
           if "usesCleartextTraffic" not in xml:
               xml = xml.replace(
                   "<application",
-                  '<application\n        android:usesCleartextTraffic="true"',
+                  '<application\n        android:usesCleartextTraffic="true"\n        android:extractNativeLibs="true"',
                   1,
               )
 
           with open(manifest_path, "w", encoding="utf-8") as f:
               f.write(xml)
-          print("Updated AndroidManifest.xml successfully")
+          print("Updated AndroidManifest.xml with cleartext HTTP & compressed native libs")
 
           kt_files = glob.glob("android/app/src/main/kotlin/**/MainActivity.kt", recursive=True)
           for kt in kt_files:
@@ -90,9 +101,7 @@ jobs:
               code = code.replace("FlutterActivity", "FlutterFragmentActivity")
               with open(kt, "w", encoding="utf-8") as f:
                   f.write(code)
-              print("Updated", kt)
 
-          # Generate all Android mipmap launcher icons directly using Pillow
           src_icon = Image.open("assets/icon/app_icon.png").convert("RGBA")
           sizes = {
               "mipmap-mdpi": 48,
@@ -107,9 +116,8 @@ jobs:
               out_dir = os.path.join(res_dir, folder)
               os.makedirs(out_dir, exist_ok=True)
               src_icon.resize((px, px), Image.Resampling.LANCZOS).save(
-                  os.path.join(out_dir, "ic_launcher.png")
+                  os.path.join(out_dir, "ic_launcher.png"), optimize=True
               )
-          print("Generated all mipmap launcher icons")
           PYEOF
 
       - name: Install Flutter Dependencies
@@ -118,23 +126,23 @@ jobs:
       - name: Run Static Analysis
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
-      - name: Build Release APK
+      - name: Build Ultra-Slim Split-ABI Release APKs
         run: |
-          flutter build apk --release
-          cp build/app/outputs/flutter-apk/app-release.apk ModemZaid-v1.0.0.apk
+          flutter build apk --release --split-per-abi --tree-shake-icons --obfuscate --split-debug-info=/tmp/symbols
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ModemZaid-arm64-v1.0.0.apk
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ModemZaid-arm32-v1.0.0.apk
+          ls -lh ModemZaid-arm*.apk
 
-      - name: Upload Release APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ModemZaid-APK
-          path: ModemZaid-v1.0.0.apk
-
-      - name: Publish GitHub Release APK
+      - name: Publish Slim APKs to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.0
-          name: "مودم زيد v1.0.0 (Modem Zaid APK)"
+          name: "مودم زيد v1.0.0 — نسخة خفيفة مضغوطة"
           body: |
             تطبيق **مودم زيد (Modem Zaid)** المبني بـ Flutter لإدارة وترجمة واجهات ومميزات جميع مودمات يمن فورجي والراوترات تلقائياً باللغة العربية.
-          files: ModemZaid-v1.0.0.apk
+            - **ModemZaid-arm64-v1.0.0.apk**: النسخة الخفيفة المضغوطة للهواتف الحديثة (معمارية 64-بت مثل Samsung S21 Ultra ومعظم الهواتف).
+            - **ModemZaid-arm32-v1.0.0.apk**: النسخة الخفيفة للهواتف القديمة (معمارية 32-بت).
+          files: |
+            ModemZaid-arm64-v1.0.0.apk
+            ModemZaid-arm32-v1.0.0.apk
           make_latest: true

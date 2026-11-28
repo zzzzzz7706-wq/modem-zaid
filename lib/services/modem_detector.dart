@@ -278,6 +278,17 @@ class ModemDetector {
               finish();
               return;
             }
+            if (cur.length > bodyStart) {
+              final bodyPreview = latin1
+                  .decode(cur.sublist(bodyStart), allowInvalid: true)
+                  .replaceAll('\x00', '')
+                  .trim();
+              if (bodyPreview.startsWith('{') && bodyPreview.endsWith('}')) {
+                idleAfterHeaderTimer?.cancel();
+                idleAfterHeaderTimer =
+                    Timer(const Duration(milliseconds: 80), finish);
+              }
+            }
           }
         }
       },
@@ -783,53 +794,73 @@ class ModemDetector {
       );
     }
 
-    // 3. ZTE / ZXIC / Star Speed 4G / ZLT / Olax / Qualcomm CGI (/goform/... or /reqproc/...)
+    // 3. ZTE / ZXIC / Star Speed 4G / Demo-Webs / ZLT / Olax / Qualcomm CGI (/goform/... or /reqproc/...)
     const zteMultiQuery =
         '?isTest=false&multi_data=1&cmd=Language,model_name,hardware_version,wa_inner_version,cr_version,modem_main_state,SSID1';
+    final zteReqHeaders = {
+      'Referer': 'http://$ip/index.html',
+      'X-Requested-With': 'XMLHttpRequest',
+    };
     var zteLd = await _rawHttp(
       ip,
       '/goform/goform_get_cmd_process?isTest=false&cmd=LD',
       localIp,
-      extraHeaders: {'Referer': 'http://$ip/index.html'},
+      extraHeaders: zteReqHeaders,
     );
     var zte = await _rawHttp(
       ip,
       '/goform/goform_get_cmd_process$zteMultiQuery',
       localIp,
-      extraHeaders: {'Referer': 'http://$ip/index.html'},
+      extraHeaders: zteReqHeaders,
     );
     var useReqProc = false;
-    bool isValidZteJson( _HttpProbe p) {
+    bool isValidZteJson(_HttpProbe p) {
       if (p.status != 200) return false;
-      final t = p.body.trim();
+      final t = p.body.replaceAll('\x00', '').trim();
       final s = t.indexOf('{');
-      return s != -1 && t.endsWith('}') && !t.toLowerCase().contains('<html');
+      final e = t.lastIndexOf('}');
+      return s != -1 && e > s && !t.toLowerCase().contains('<html');
     }
+
+    String extractJsonObj(String raw) {
+      final t = raw.replaceAll('\x00', '').trim();
+      final s = t.indexOf('{');
+      final e = t.lastIndexOf('}');
+      if (s != -1 && e > s) return t.substring(s, e + 1);
+      return '{}';
+    }
+
+    final serverHdrLower = (page.headers['server'] ?? '').toLowerCase();
+    bool isDemoWebsReqProc = false;
 
     if (!isValidZteJson(zteLd) && !isValidZteJson(zte)) {
       final reqLd = await _rawHttp(
         ip,
         '/reqproc/proc_get?isTest=false&cmd=LD',
         localIp,
-        extraHeaders: {'Referer': 'http://$ip/index.html'},
+        extraHeaders: zteReqHeaders,
       );
       final reqMulti = await _rawHttp(
         ip,
         '/reqproc/proc_get$zteMultiQuery',
         localIp,
-        extraHeaders: {'Referer': 'http://$ip/index.html'},
+        extraHeaders: zteReqHeaders,
       );
-      if (isValidZteJson(reqLd) || isValidZteJson(reqMulti)) {
+      if (isValidZteJson(reqLd) ||
+          isValidZteJson(reqMulti) ||
+          (serverHdrLower.contains('demo-webs') &&
+              (reqLd.status == 200 || reqMulti.status == 200))) {
         zteLd = reqLd;
         zte = reqMulti;
         useReqProc = true;
+        isDemoWebsReqProc = true;
       }
     }
 
-    if (isValidZteJson(zteLd) || isValidZteJson(zte)) {
+    if (isValidZteJson(zteLd) || isValidZteJson(zte) || isDemoWebsReqProc) {
       final zteBody = isValidZteJson(zte)
-          ? zte.body.substring(zte.body.indexOf('{')).trim()
-          : zteLd.body.substring(zteLd.body.indexOf('{')).trim();
+          ? extractJsonObj(zte.body)
+          : extractJsonObj(zteLd.body);
       String zteModel = '';
       String zteHw = '';
       String zteSsid = '';

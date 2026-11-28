@@ -59,9 +59,23 @@ class ZteGoformAdapter implements ModemAdapter {
 
   Map<String, String> get _headers => {
         'Referer': 'http://$gatewayIp/index.html',
+        'Origin': 'http://$gatewayIp',
         'X-Requested-With': 'XMLHttpRequest',
         if (_cookie.isNotEmpty) 'Cookie': _cookie,
       };
+
+  static Map<String, dynamic> _parseJsonMap(String raw) {
+    final clean = raw.replaceAll('\x00', '').trim();
+    final start = clean.indexOf('{');
+    final end = clean.lastIndexOf('}');
+    if (start != -1 && end > start) {
+      try {
+        final dec = jsonDecode(clean.substring(start, end + 1));
+        if (dec is Map<String, dynamic>) return dec;
+      } catch (_) {}
+    }
+    return {};
+  }
 
   void _saveCookies(Map<String, String> headers) {
     final sc = headers['set-cookie'];
@@ -87,13 +101,9 @@ class ZteGoformAdapter implements ModemAdapter {
         .get(uri, headers: _headers)
         .timeout(const Duration(seconds: 5));
     _saveCookies(res.headers);
-    final body = utf8.decode(res.bodyBytes, allowMalformed: true).trim();
-    final start = body.indexOf('{');
-    if (start != -1) {
-      final map = jsonDecode(body.substring(start)) as Map<String, dynamic>;
-      return (map[cmd] ?? '').toString().trim();
-    }
-    return '';
+    final body = utf8.decode(res.bodyBytes, allowMalformed: true);
+    final map = _parseJsonMap(body);
+    return (map[cmd] ?? '').toString().trim();
   }
 
   Future<Map<String, dynamic>> _getCmd(List<String> cmds) async {
@@ -106,12 +116,8 @@ class ZteGoformAdapter implements ModemAdapter {
         .get(uri, headers: _headers)
         .timeout(const Duration(seconds: 5));
     _saveCookies(res.headers);
-    final body = utf8.decode(res.bodyBytes, allowMalformed: true).trim();
-    final start = body.indexOf('{');
-    if (start != -1) {
-      return jsonDecode(body.substring(start)) as Map<String, dynamic>;
-    }
-    return {};
+    final body = utf8.decode(res.bodyBytes, allowMalformed: true);
+    return _parseJsonMap(body);
   }
 
   static String _sha256Upper(String s) =>
@@ -150,13 +156,27 @@ class ZteGoformAdapter implements ModemAdapter {
         bodyFields['isTest'] = 'false';
         if (ad.isNotEmpty) bodyFields['AD'] = ad;
 
+        final encodedForm = bodyFields.entries
+            .map((e) =>
+                '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}')
+            .join('&');
         final uri = Uri.parse('http://$gatewayIp$_setPath');
         final res = await _client
-            .post(uri, headers: _headers, body: bodyFields)
+            .post(
+              uri,
+              headers: {
+                ..._headers,
+                'Content-Type': 'application/x-www-form-urlencoded',
+              },
+              body: encodedForm,
+            )
             .timeout(const Duration(seconds: 6));
         _saveCookies(res.headers);
-        final text = utf8.decode(res.bodyBytes, allowMalformed: true);
-        if (text.contains('success') || text.contains('"0"')) {
+        final text = utf8
+            .decode(res.bodyBytes, allowMalformed: true)
+            .replaceAll('\x00', '')
+            .toLowerCase();
+        if (text.contains('success') || text.contains('"0"') || text.contains('"ok"')) {
           _usesSha256 = shaMode;
           return true;
         }
@@ -198,70 +218,100 @@ class ZteGoformAdapter implements ModemAdapter {
       );
     }
 
-    final candidates = <(String passEncoded, bool shaMode)>[];
+    final candidates = <(String passEncoded, bool shaMode, bool withUser)>[];
     final b64 = base64Encode(utf8.encode(_password));
+    final md5Pwd = _md5Lower(_password);
+    final shaUpPwd = _sha256Upper(_password);
+    final safeToFallback = failLeft != '1' && failLeft != '2';
+    final primaryWithUser = !passwordOnly || usesMultiUserLogin;
+
     if (ld.isNotEmpty) {
       _usesSha256 = ld.length >= 48;
       if (preferredEncoding == 'base64') {
-        candidates.add((b64, false));
+        candidates.add((b64, false, primaryWithUser));
       }
       if (preferredEncoding == 'sha256_lower') {
-        candidates.add((_sha256Lower('${_sha256Lower(_password)}$ld'), true));
+        candidates.add(
+            (_sha256Lower('${_sha256Lower(_password)}$ld'), true, primaryWithUser));
       }
       if (ld.length == 32) {
-        // 128-bit MD5 challenge firmware
         final innerMd5 = _md5Lower(_password);
-        candidates.add((_md5Lower('$innerMd5$ld'), false));
+        candidates.add((_md5Lower('$innerMd5$ld'), false, primaryWithUser));
+        if (safeToFallback) {
+          candidates.add((_md5Lower('$innerMd5$ld'), false, !primaryWithUser));
+        }
       } else {
-        // 2023-2025 ZTE / ZXIC / Star Speed 4G SHA-256 challenge firmware
         final inner = _sha256Upper(_password);
-        candidates.add((_sha256Upper('$inner$ld'), true));
-        // Some Star Speed 4G / ZXIC clones use lowercase SHA256 or Base64 despite LD
-        if (failLeft != '1' && failLeft != '2') {
-          candidates.add((_sha256Lower('${_sha256Lower(_password)}$ld'), true));
-          candidates.add((b64, false));
+        candidates.add((_sha256Upper('$inner$ld'), true, primaryWithUser));
+        if (safeToFallback) {
+          candidates.add((_sha256Upper('$inner$ld'), true, !primaryWithUser));
+          candidates.add(
+              (_sha256Lower('${_sha256Lower(_password)}$ld'), true, primaryWithUser));
+          candidates.add((b64, false, primaryWithUser));
+          candidates.add((_password, false, primaryWithUser));
         }
       }
     } else {
-      // Classic ZTE / Olax / Speed 4G firmwares: Base64(pwd), then SHA256(pwd), then plain
-      if (preferredEncoding == 'sha256_upper' || preferredEncoding == 'sha256_lower') {
-        candidates.add((_sha256Upper(_password), true));
-        candidates.add((b64, false));
+      // Demo-Webs / Qualcomm / Olax / Speed 4G / Star Speed (no LD):
+      // Base64(pwd) is #1, followed by plain(pwd), SHA256(pwd), MD5(pwd)
+      if (preferredEncoding == 'sha256_upper' ||
+          preferredEncoding == 'sha256_lower') {
+        candidates.add((shaUpPwd, true, primaryWithUser));
+        candidates.add((b64, false, primaryWithUser));
       } else {
-        candidates.add((b64, false));
-        candidates.add((_sha256Upper(_password), true));
+        candidates.add((b64, false, primaryWithUser));
+        candidates.add((_password, false, primaryWithUser));
+        candidates.add((shaUpPwd, true, primaryWithUser));
       }
-      candidates.add((_password, false));
+      if (safeToFallback) {
+        candidates.add((b64, false, !primaryWithUser));
+        candidates.add((_password, false, !primaryWithUser));
+        candidates.add((md5Pwd, false, primaryWithUser));
+      }
     }
 
-    final loginGoformId =
-        (usesMultiUserLogin && !passwordOnly) ? 'LOGIN_MULTI_USER' : 'LOGIN';
     String lastResult = '';
-    for (final (encoded, shaMode) in candidates) {
+    for (final (encoded, shaMode, withUser) in candidates) {
       try {
         final ad = await _computeAd(useSha256: shaMode);
+        final loginGoformId =
+            (usesMultiUserLogin && withUser) ? 'LOGIN_MULTI_USER' : 'LOGIN';
         final payload = <String, String>{
           'isTest': 'false',
           'goformId': loginGoformId,
+          if (withUser) 'username': _username,
           'password': encoded,
-          if (!passwordOnly || usesMultiUserLogin) 'username': _username,
           if (ad.isNotEmpty) 'AD': ad,
         };
+        final encodedForm = payload.entries
+            .map((e) =>
+                '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}')
+            .join('&');
         final uri = Uri.parse('http://$gatewayIp$_setPath');
         final res = await _client
-            .post(uri, headers: _headers, body: payload)
+            .post(
+              uri,
+              headers: {
+                ..._headers,
+                'Content-Type': 'application/x-www-form-urlencoded',
+              },
+              body: encodedForm,
+            )
             .timeout(const Duration(seconds: 6));
         reachedServer = true;
         _saveCookies(res.headers);
-        final text = utf8.decode(res.bodyBytes, allowMalformed: true);
+        final text =
+            utf8.decode(res.bodyBytes, allowMalformed: true).replaceAll('\x00', '');
         final m = RegExp(r'"result"\s*:\s*"?(\w+)"?').firstMatch(text);
         lastResult = m?.group(1) ?? '';
-        if (lastResult == '0' || text.contains('success')) {
+        if (lastResult == '0' ||
+            lastResult.toLowerCase() == 'ok' ||
+            text.toLowerCase().contains('success')) {
           _usesSha256 = shaMode;
           return const LoginOutcome(success: true);
         }
         // Stop early if remaining attempts dropped low to prevent modem lockout
-        if (ld.isNotEmpty && (failLeft == '1' || failLeft == '2')) break;
+        if (ld.isNotEmpty && !safeToFallback) break;
       } catch (_) {}
     }
 

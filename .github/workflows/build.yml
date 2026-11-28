@@ -138,22 +138,20 @@ jobs:
       - name: Build Ultra-Slim Split-ABI Release APKs
         run: |
           flutter build apk --release --split-per-abi --tree-shake-icons --obfuscate --split-debug-info=/tmp/symbols
-          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ModemZaid-arm64-v1.6.0.apk
-          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ModemZaid-arm32-v1.6.0.apk
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ModemZaid-arm64-v1.6.1.apk
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ModemZaid-arm32-v1.6.1.apk
           ls -lh ModemZaid-arm*.apk
 
       - name: Publish Slim APKs to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.6.0
-          name: "مودم زيد v1.6.0 — المحرك الذكي الشامل لاكتشاف والتحكم بأي مودم يمن فورجي (Star Speed / ZLT / QCMAP)"
+          tag_name: v1.6.1
+          name: "مودم زيد v1.6.1 — إصلاح جذري لمودمات كلمة المرور الواحدة ومودمات Demo-Webs / Star Speed"
           body: |
-            إصدار **مودم زيد v1.6.0 (Modem Zaid)**:
-            - **محرك التحليل الذكي لصفحات وملفات جافاسكربت المودم (`SmartModemProfiler`)**: يستخرج تلقائياً نقاط اتصال الـ API، وطريقة تشفير كلمة المرور (`SHA-256` / `MD5` / `Base64`)، ونماذج الدخول لأي مودم يمن فورجي حتى الموديلات الجديدة.
-            - **دعم أصيل وكامل لمودمات `Star Speed 4G` و `ZLT / Tozed` (`TozedZltAdapter`)**: دعم `/cgi-bin/http.cgi` و `/cgi-bin/lua.cgi` (تثبيت الترددات، إدارة الواي فاي، حظر الأجهزة، الرسائل، إعادة التشغيل) بالإضافة لتحسين دخول `ZTE / ZXIC / Star Speed`.
-            - **تطوير المترجم الذكي التكيّفي**: إضافة دعم `Qualcomm QCMAP` (`/cgi-bin/qcmap_auth`) و `OpenWrt ubus` وتفعيل التحكم الكامل لمودمات `Alcatel / TCL / Speed 4G` (`/jrd/webapi`).
-            - **نافذة محلل المودم الذكي (`SmartModemInspectorSheet`)**: فحص عميق للمودم، واختيار البروتوكول يدوياً عند الحاجة، ونسخ بصمة المودم بضغطة زر.
+            إصدار **مودم زيد v1.6.1 (Modem Zaid)**:
+            - **إصلاح جذري لمودمات كلمة المرور الواحدة (`Demo-Webs` / `Star Speed` / `Qualcomm /reqproc` / `ZTE` / `Olax`)**: معالجة بايتات `NUL` في ردود JSON وإضافة ترويسات `Origin` و `application/x-www-form-urlencoded` القياسية، وتجربة الدخول تلقائياً بكلمة المرور فقط وباسم المستخدم (`admin`) مع تشفيرات `Base64` / `SHA-256` / `MD5` / نص مباشر.
+            - **تبسيط الواجهة**: إزالة نافذة محلل المودم اليدوية وجعل الاكتشاف والتكيف يعمل تلقائياً بالكامل في الخلفية بدون أي تعقيد.
           files: |
-            ModemZaid-arm64-v1.6.0.apk
-            ModemZaid-arm32-v1.6.0.apk
+            ModemZaid-arm64-v1.6.1.apk
+            ModemZaid-arm32-v1.6.1.apk
           make_latest: true

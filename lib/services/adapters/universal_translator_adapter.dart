@@ -509,6 +509,14 @@ class UniversalTranslatorAdapter implements ModemAdapter {
           'body': {'luci_username': _username, 'luci_password': _password},
         },
         {
+          'path': '/login/Auth',
+          'body': {'password': passB64},
+        },
+        {
+          'path': '/goform/login',
+          'body': {'password': passB64},
+        },
+        {
           'path': '/goform/login',
           'body': {'username': _username, 'password': passB64},
         },
@@ -524,6 +532,11 @@ class UniversalTranslatorAdapter implements ModemAdapter {
           'path': '/api/login',
           'json': true,
           'body': {'username': _username, 'password': _password, 'pwd': passMd5},
+        },
+        {
+          'path': '/api/login',
+          'json': true,
+          'body': {'password': _password, 'pwd': passMd5},
         },
       ];
 
@@ -546,12 +559,15 @@ class UniversalTranslatorAdapter implements ModemAdapter {
             _cookie = cookie.split(';').first;
             return const LoginOutcome(success: true);
           }
+          final bodyLow = r.body.toLowerCase();
           if (r.statusCode == 200 &&
               r.body.isNotEmpty &&
-              !r.body.toLowerCase().contains('error') &&
-              !r.body.toLowerCase().contains('invalid') &&
-              !r.body.toLowerCase().contains('wrong') &&
-              !r.body.toLowerCase().contains('fail')) {
+              !bodyLow.contains('404') &&
+              !bodyLow.contains('not found') &&
+              !bodyLow.contains('error') &&
+              !bodyLow.contains('invalid') &&
+              !bodyLow.contains('wrong') &&
+              !bodyLow.contains('fail')) {
             return const LoginOutcome(success: true);
           }
         } catch (_) {}

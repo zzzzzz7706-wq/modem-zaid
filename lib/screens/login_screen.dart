@@ -4,7 +4,6 @@ import '../models/modem_models.dart';
 import '../services/app_controller.dart';
 import '../widgets/balance_inquiry_sheet.dart';
 import '../widgets/gauges_and_cards.dart';
-import '../widgets/smart_modem_inspector_sheet.dart';
 import '../widgets/supported_modems_sheet.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -182,22 +181,6 @@ class _LoginScreenState extends State<LoginScreen>
                     ),
                   ),
                 ],
-              ),
-              const SizedBox(height: 10),
-              TextButton.icon(
-                onPressed: () {
-                  Navigator.pop(ctx);
-                  showSmartModemInspectorSheet(context, widget.controller);
-                },
-                icon: Icon(Icons.auto_awesome_rounded,
-                    size: 18, color: p.accentSecondary),
-                label: Text(
-                  'محلل المودم الذكي واختيار البروتوكول',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w700,
-                    color: p.accentSecondary,
-                  ),
-                ),
               ),
             ],
           ),
